@@ -1,0 +1,15 @@
+{
+  "joplin": {
+    "api_base": "http://127.0.0.1:41184",
+    "token": "请填写你的Joplin令牌"
+  },
+  "obsidian": {
+    "vault_path": "C:/Users/你的用户名/Obsidian 笔记库路径"
+  },
+  "sync_rules": {
+    "joplin_to_obsidian_only": ["工作笔记", "学习资料", "项目*"],
+    "obsidian_to_joplin_only": ["个人日记", "临时记录", "备份*"],
+    "skip_sync": ["备份笔记", "测试笔记", "Conflict*", "临时*", "草稿*"],
+    "bidirectional": ["通用笔记", "项目文档", "重要*"]
+  }
+} 

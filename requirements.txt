@@ -1,0 +1,12 @@
+# requests：用于访问 Joplin 的 Web API
+requests
+# pyyaml：用于处理 Obsidian 的标签（YAML frontmatter）
+pyyaml
+# tqdm：用于显示同步进度条（提升用户体验）
+tqdm
+# fuzzywuzzy：用于模糊字符串匹配（查重功能）
+fuzzywuzzy
+# python-Levenshtein：提升fuzzywuzzy性能
+python-Levenshtein
+# uuid：生成唯一标识符
+uuid 
