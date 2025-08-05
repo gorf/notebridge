@@ -67,6 +67,7 @@ def handle_file_errors(func):
 def clean_duplicate_sync_info(content):
     """
     清理笔记内容中的重复同步信息，只保留最新的一个
+    增强版：能更好地处理HTML注释和YAML格式混合的情况
     """
     # 提取所有同步信息
     joplin_ids = re.findall(r'<!-- notebridge_id: ([a-f0-9-]+) -->', content)
@@ -95,19 +96,22 @@ def clean_duplicate_sync_info(content):
         return content  # 没有有效的时间信息，直接返回
     
     # 清理所有旧的同步信息
-    # 清理HTML注释中的同步信息
+    # 清理HTML注释中的同步信息（更彻底）
     content = re.sub(r'<!-- notebridge_id: [a-f0-9-]+ -->\s*', '', content)
     content = re.sub(r'<!-- notebridge_sync_time: [^>]+ -->\s*', '', content)
     content = re.sub(r'<!-- notebridge_source: [^>]+ -->\s*', '', content)
     content = re.sub(r'<!-- notebridge_version: [^>]+ -->\s*', '', content)
     
-    # 清理YAML中的同步信息
+    # 清理YAML中的同步信息（更彻底）
     content = re.sub(r'notebridge_id: [a-f0-9-]+\s*\n', '', content)
     content = re.sub(r'notebridge_sync_time: \'?[^\'\n]+\'?\s*\n', '', content)
     content = re.sub(r'notebridge_source: [^\n]+\s*\n', '', content)
     content = re.sub(r'notebridge_version: [^\n]+\s*\n', '', content)
     
-    # 添加最新的同步信息
+    # 清理可能的空行和多余的换行
+    content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+    content = re.sub(r'^\s*\n', '', content)
+    
     # 判断内容类型：如果包含YAML frontmatter，则按Obsidian格式处理
     has_yaml = bool(re.search(r'^---\s*\n.*?\n---\s*\n', content, re.DOTALL))
     
@@ -152,25 +156,49 @@ def extract_sync_info_from_joplin(note_body):
 
 def extract_sync_info_from_obsidian(content):
     """
-    从 Obsidian 笔记内容中提取同步信息（修复多ID问题）
+    从 Obsidian 笔记内容中提取同步信息（支持YAML和HTML注释格式）
     """
-    # 先清理重复的同步信息
-    cleaned_content = clean_duplicate_sync_info(content)
-    
     sync_info = {}
     
-    # 查找 YAML frontmatter
-    yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', cleaned_content, re.DOTALL)
+    # 1. 查找 YAML frontmatter
+    yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
     if yaml_match:
         yaml_content = yaml_match.group(1)
         try:
             yaml_data = yaml.safe_load(yaml_content)
             if yaml_data:
                 sync_info['notebridge_id'] = yaml_data.get('notebridge_id', '')
-                sync_info['notebridge_sync_time'] = yaml_data.get('notebridge_sync_time', '')
-                sync_info['notebridge_source'] = yaml_data.get('notebridge_source', '')
-        except:
+                sync_info['notebridge_sync_time'] = yaml_data.get(
+                    'notebridge_sync_time', ''
+                )
+                sync_info['notebridge_source'] = yaml_data.get(
+                    'notebridge_source', ''
+                )
+        except Exception:
             pass
+    
+    # 2. 查找 HTML 注释格式的同步信息
+    # 查找 notebridge_id
+    id_match = re.search(r'<!--\s*notebridge_id:\s*([a-f0-9\-]+)\s*-->', content)
+    if id_match:
+        sync_info['notebridge_id'] = id_match.group(1)
+    
+    # 查找 notebridge_sync_time
+    time_match = re.search(
+        r'<!--\s*notebridge_sync_time:\s*([^>]+)\s*-->', content
+    )
+    if time_match:
+        sync_info['notebridge_sync_time'] = time_match.group(1).strip()
+    
+    # 查找 notebridge_source
+    source_match = re.search(r'<!--\s*notebridge_source:\s*(\w+)\s*-->', content)
+    if source_match:
+        sync_info['notebridge_source'] = source_match.group(1)
+    
+    # 查找 notebridge_version
+    version_match = re.search(r'<!--\s*notebridge_version:\s*(\d+)\s*-->', content)
+    if version_match:
+        sync_info['notebridge_version'] = version_match.group(1)
     
     return sync_info
 
@@ -206,6 +234,7 @@ def detect_notebook_from_content(note_title, note_body):
 def get_joplin_notes():
     """
     通过 Joplin Web API 获取所有笔记的标题、内容和笔记本信息（支持多级嵌套）
+    自动过滤掉 skip_sync 中指定的笔记本
     """
     notes = []
     page = 1
@@ -253,23 +282,46 @@ def get_joplin_notes():
         
         return '/'.join(path_parts)
     
-    # 为每条笔记添加完整的笔记本路径（保持原有分类）
+    # 为每条笔记添加完整的笔记本路径，并过滤掉 skip_sync 中的笔记本
+    filtered_notes = []
+    skipped_count = 0
+    
     for note in notes:
         notebook_id = note.get('parent_id', '')
-        note['notebook'] = get_full_notebook_path(notebook_id)
+        notebook_path = get_full_notebook_path(notebook_id)
+        
+        # 检查是否匹配 skip_sync 模式
+        should_skip = False
+        for pattern in sync_rules['skip_sync']:
+            if matches_pattern(notebook_path, pattern):
+                should_skip = True
+                skipped_count += 1
+                break
+        
+        if should_skip:
+            continue  # 跳过这个笔记
+        
+        note['notebook'] = notebook_path
         note['notebook_path'] = note['notebook'].split('/')
+        filtered_notes.append(note)
     
-    return notes
+    if skipped_count > 0:
+        print(f"📝 已过滤掉 {skipped_count} 条来自 skip_sync 笔记本的笔记")
+    
+    return filtered_notes
 
 # 6. 读取 Obsidian 文件夹下的所有 Markdown 文件
 def get_obsidian_notes():
     """
     读取 Obsidian 笔记库下所有 .md 文件的标题、内容和文件夹信息
+    自动过滤掉 skip_sync 中指定的文件夹
     """
     notes = []
     md_files = glob.glob(os.path.join(obsidian_vault_path, '**', '*.md'), recursive=True)
     
     print(f"发现 {len(md_files)} 个 Markdown 文件，正在读取...")
+    
+    skipped_count = 0
     
     for file_path in md_files:
         try:
@@ -286,6 +338,17 @@ def get_obsidian_notes():
             folder = os.path.dirname(rel_path)
             if folder == '.':
                 folder = '根目录'
+            
+            # 检查是否匹配 skip_sync 模式
+            should_skip = False
+            for pattern in sync_rules['skip_sync']:
+                if matches_pattern(folder, pattern):
+                    should_skip = True
+                    skipped_count += 1
+                    break
+            
+            if should_skip:
+                continue  # 跳过这个文件
             
             title = Path(file_path).stem  # 文件名作为标题
             notes.append({
@@ -309,6 +372,8 @@ def get_obsidian_notes():
             continue
     
     print(f"成功读取 {len(notes)} 个文件")
+    if skipped_count > 0:
+        print(f"📝 已过滤掉 {skipped_count} 个来自 skip_sync 文件夹的文件")
     return notes
 
 # 7. 根据同步规则过滤笔记
@@ -324,44 +389,27 @@ def matches_pattern(text, pattern):
 def apply_sync_rules(joplin_notes, obsidian_notes):
     """
     根据配置的同步规则过滤笔记（支持通配符模式匹配）
+    注意：skip_sync 的过滤已在读取时完成，这里只处理其他同步规则
     """
     joplin_to_sync = []
     obsidian_to_sync = []
     
-    # 处理 Joplin 笔记
+    # 处理 Joplin 笔记（skip_sync 已在读取时过滤）
     for note in joplin_notes:
         notebook = note['notebook']
         
-        # 检查是否匹配跳过同步的模式
-        should_skip = False
-        for pattern in sync_rules['skip_sync']:
-            if matches_pattern(notebook, pattern):
-                should_skip = True
-                break
-        
-        if should_skip:
-            continue  # 跳过不同步的笔记本
-        elif any(matches_pattern(notebook, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
+        if any(matches_pattern(notebook, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
             joplin_to_sync.append(note)  # 只同步到 Obsidian
         elif any(matches_pattern(notebook, pattern) for pattern in sync_rules['obsidian_to_joplin_only']):
             continue  # 只从 Obsidian 同步过来，不从这里同步出去
         else:
             joplin_to_sync.append(note)  # 默认双向同步
     
-    # 处理 Obsidian 笔记
+    # 处理 Obsidian 笔记（skip_sync 已在读取时过滤）
     for note in obsidian_notes:
         folder = note['folder']
         
-        # 检查是否匹配跳过同步的模式
-        should_skip = False
-        for pattern in sync_rules['skip_sync']:
-            if matches_pattern(folder, pattern):
-                should_skip = True
-                break
-        
-        if should_skip:
-            continue  # 跳过不同步的文件夹
-        elif any(matches_pattern(folder, pattern) for pattern in sync_rules['obsidian_to_joplin_only']):
+        if any(matches_pattern(folder, pattern) for pattern in sync_rules['obsidian_to_joplin_only']):
             obsidian_to_sync.append(note)  # 只同步到 Joplin
         elif any(matches_pattern(folder, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
             continue  # 只从 Joplin 同步过来，不从这里同步出去
@@ -470,65 +518,82 @@ def print_duplicate_report(duplicates):
     print("📊 查重报告")
     print("="*50)
     
-    print(f"\n🔍 完全重复的笔记（内容哈希相同）：{len(duplicates['content_hash_duplicates'])} 对")
-    for i, dup in enumerate(duplicates['content_hash_duplicates'][:5], 1):
-        print(f"  {i}. Joplin: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
-        print(f"     Obsidian: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
+    # 基于notebridge_id的重复
+    if duplicates.get('id_duplicates'):
+        print(f"\n🆔 基于ID的重复笔记：{len(duplicates['id_duplicates'])} 对")
+        for i, dup in enumerate(duplicates['id_duplicates'][:5], 1):
+            dup_type = dup.get('duplicate_type', 'unknown')
+            if dup_type == 'joplin_internal':
+                print(f"  {i}. Joplin内部重复: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
+            elif dup_type == 'obsidian_internal':
+                print(f"  {i}. Obsidian内部重复: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
+            else:
+                print(f"  {i}. ID重复: {dup['joplin']['title']} <-> {dup['obsidian']['title']}")
+        if len(duplicates['id_duplicates']) > 5:
+            print(f"  ... 还有 {len(duplicates['id_duplicates']) - 5} 对")
     
-    print(f"\n📝 标题和内容都相似的笔记：{len(duplicates['exact_duplicates'])} 对")
-    for i, dup in enumerate(duplicates['exact_duplicates'][:5], 1):
-        print(f"  {i}. Joplin: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
-        print(f"     Obsidian: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
-        print(f"     相似度: 标题{dup['title_similarity']:.1%}, 内容{dup['content_similarity']:.1%}")
+    # 同步时间冲突
+    if duplicates.get('sync_time_conflicts'):
+        print(f"\n⏰ 同步时间冲突：{len(duplicates['sync_time_conflicts'])} 对")
+        for i, dup in enumerate(duplicates['sync_time_conflicts'][:5], 1):
+            print(f"  {i}. Joplin: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
+            print(f"     Obsidian: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
+            print(f"     Joplin时间: {dup.get('joplin_time', 'N/A')}")
+            print(f"     Obsidian时间: {dup.get('obsidian_time', 'N/A')}")
+            print(f"     时间差: {dup.get('time_diff', 'N/A')} 秒")
+        if len(duplicates['sync_time_conflicts']) > 5:
+            print(f"  ... 还有 {len(duplicates['sync_time_conflicts']) - 5} 对")
     
-    print(f"\n📋 标题相似的笔记：{len(duplicates['title_similar'])} 对")
-    for i, dup in enumerate(duplicates['title_similar'][:5], 1):
-        print(f"  {i}. Joplin: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
-        print(f"     Obsidian: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
-        print(f"     相似度: 标题{dup['title_similarity']:.1%}, 内容{dup['content_similarity']:.1%}")
+    total_duplicates = len(duplicates.get('id_duplicates', [])) + len(duplicates.get('sync_time_conflicts', []))
     
-    print(f"\n📄 内容相似的笔记：{len(duplicates['content_similar'])} 对")
-    for i, dup in enumerate(duplicates['content_similar'][:5], 1):
-        print(f"  {i}. Joplin: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
-        print(f"     Obsidian: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
-        print(f"     相似度: 标题{dup['title_similarity']:.1%}, 内容{dup['content_similarity']:.1%}")
-    
-    total_duplicates = (len(duplicates['content_hash_duplicates']) + 
-                       len(duplicates['exact_duplicates']) + 
-                       len(duplicates['title_similar']) + 
-                       len(duplicates['content_similar']))
-    
-    print(f"\n📈 总计发现 {total_duplicates} 对重复/相似笔记")
+    print(f"\n📈 总计发现 {total_duplicates} 对重复/冲突笔记")
+    if total_duplicates > 0:
+        print(f"💡 建议：运行 'python notebridge.py interactive-clean' 进行交互式清理")
+        print(f"  或者运行 'python notebridge.py clean-duplicates' 进行自动清理")
+    else:
+        print(f"✅ 没有发现重复问题")
     print("="*50)
 
 # 9. 防重复同步机制
 def generate_sync_info(source):
     """
-    生成新的同步信息
+    生成新的同步信息（修复时间戳问题）
     """
+    # 确保使用正确的时间，避免未来时间戳
+    current_time = datetime.now()
+    
+    # 如果时间戳是未来时间，使用当前时间
+    if current_time.year > 2024:
+        # 可能是系统时间设置错误，使用一个合理的默认时间
+        current_time = datetime.now().replace(year=2024)
+    
     return {
         'notebridge_id': str(uuid.uuid4()),
-        'notebridge_sync_time': datetime.now().isoformat(),
+        'notebridge_sync_time': current_time.isoformat(),
         'notebridge_source': source,
         'notebridge_version': '1'
     }
 
 def build_id_mapping(joplin_notes, obsidian_notes):
     """
-    建立 ID 映射关系
+    建立 ID 映射关系（以notebridge_id为准，不依赖文件名）
     """
     id_mapping = {
         'joplin_to_obsidian': {},  # notebridge_id -> obsidian_path
         'obsidian_to_joplin': {},  # notebridge_id -> joplin_id
         'unmapped_joplin': [],     # 没有ID的Joplin笔记
-        'unmapped_obsidian': []    # 没有ID的Obsidian笔记
+        'unmapped_obsidian': [],   # 没有ID的Obsidian笔记
+        'joplin_by_id': {},        # notebridge_id -> joplin_note_object
+        'obsidian_by_id': {}       # notebridge_id -> obsidian_note_object
     }
     
     # 处理 Joplin 笔记
     for note in joplin_notes:
         sync_info = extract_sync_info_from_joplin(note['body'])
         if sync_info.get('notebridge_id'):
-            id_mapping['obsidian_to_joplin'][sync_info['notebridge_id']] = note['id']
+            notebridge_id = sync_info['notebridge_id']
+            id_mapping['obsidian_to_joplin'][notebridge_id] = note['id']
+            id_mapping['joplin_by_id'][notebridge_id] = note
         else:
             id_mapping['unmapped_joplin'].append(note)
     
@@ -536,7 +601,9 @@ def build_id_mapping(joplin_notes, obsidian_notes):
     for note in obsidian_notes:
         sync_info = extract_sync_info_from_obsidian(note['body'])
         if sync_info.get('notebridge_id'):
-            id_mapping['joplin_to_obsidian'][sync_info['notebridge_id']] = note['path']
+            notebridge_id = sync_info['notebridge_id']
+            id_mapping['joplin_to_obsidian'][notebridge_id] = note['path']
+            id_mapping['obsidian_by_id'][notebridge_id] = note
         else:
             id_mapping['unmapped_obsidian'].append(note)
     
@@ -544,7 +611,8 @@ def build_id_mapping(joplin_notes, obsidian_notes):
 
 def smart_match_notes(id_mapping, joplin_notes, obsidian_notes):
     """
-    智能匹配笔记，避免重复（考虑上次同步状态）
+    智能匹配笔记，避免重复（完全基于notebridge_id，不依赖文件名）
+    考虑单向同步规则
     """
     matched_pairs = []
     unmatched_joplin = []
@@ -559,15 +627,12 @@ def smart_match_notes(id_mapping, joplin_notes, obsidian_notes):
         previous_joplin_ids = set(previous_state['joplin_notes'].keys())
         previous_obsidian_ids = set(previous_state['obsidian_notes'].keys())
     
-    # 1. 通过ID直接匹配
+    # 1. 通过notebridge_id直接匹配（这是最可靠的方式）
     for notebridge_id in id_mapping['joplin_to_obsidian']:
         if notebridge_id in id_mapping['obsidian_to_joplin']:
-            joplin_id = id_mapping['obsidian_to_joplin'][notebridge_id]
-            obsidian_path = id_mapping['joplin_to_obsidian'][notebridge_id]
-            
-            # 找到对应的笔记对象
-            joplin_note = next((n for n in joplin_notes if n['id'] == joplin_id), None)
-            obsidian_note = next((n for n in obsidian_notes if n['path'] == obsidian_path), None)
+            # 直接从映射中获取笔记对象
+            joplin_note = id_mapping['joplin_by_id'].get(notebridge_id)
+            obsidian_note = id_mapping['obsidian_by_id'].get(notebridge_id)
             
             if joplin_note and obsidian_note:
                 matched_pairs.append({
@@ -576,8 +641,15 @@ def smart_match_notes(id_mapping, joplin_notes, obsidian_notes):
                     'notebridge_id': notebridge_id,
                     'match_type': 'id'
                 })
+                print(f"  ✅ ID匹配: {joplin_note['title']} <-> {obsidian_note['title']}")
+            else:
+                print(f"  ⚠️ ID匹配失败: {notebridge_id}")
     
-    # 2. 对未匹配的笔记进行内容匹配，但排除已在上次同步中的笔记
+    # 2. 处理单向同步的笔记
+    # 对于obsidian_to_joplin_only的笔记，不需要在Joplin中找到对应项
+    # 对于joplin_to_obsidian_only的笔记，不需要在Obsidian中找到对应项
+    
+    # 3. 对未匹配的笔记进行内容匹配，但排除已在上次同步中的笔记
     unmatched_joplin_ids = set()
     unmatched_obsidian_paths = set()
     
@@ -626,13 +698,23 @@ def smart_match_notes(id_mapping, joplin_notes, obsidian_notes):
                 unmatched_joplin_ids.discard(joplin_hash_map[content_hash]['id'])
                 unmatched_obsidian_paths.discard(note['path'])
     
-    # 收集最终未匹配的笔记
+    # 收集最终未匹配的笔记，但排除单向同步的笔记
     for note in joplin_notes:
         if note['id'] in unmatched_joplin_ids:
+            # 检查是否是单向同步的笔记
+            notebook = note['notebook']
+            if any(matches_pattern(notebook, pattern) for pattern in sync_rules['obsidian_to_joplin_only']):
+                # 这是只从Obsidian同步到Joplin的笔记，不应该出现在未匹配列表中
+                continue
             unmatched_joplin.append(note)
     
     for note in obsidian_notes:
         if note['path'] in unmatched_obsidian_paths:
+            # 检查是否是单向同步的笔记
+            folder = note['folder']
+            if any(matches_pattern(folder, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
+                # 这是只从Joplin同步到Obsidian的笔记，不应该出现在未匹配列表中
+                continue
             unmatched_obsidian.append(note)
     
     return matched_pairs, unmatched_joplin, unmatched_obsidian
@@ -669,39 +751,93 @@ def print_sync_plan(matched_pairs, unmatched_joplin, unmatched_obsidian):
 # 10. 实际同步功能
 def add_sync_info_to_joplin_content(content, sync_info):
     """
-    在 Joplin 笔记内容中添加同步信息
+    在 Joplin 笔记内容中添加同步信息（彻底避免重复）
     """
+    # 彻底清理所有已存在的同步信息（包括HTML注释和YAML格式）
+    cleaned_content = clean_duplicate_sync_info(content)
+    
+    # 再次验证清理结果，确保没有任何同步信息残留
+    # 检查是否还有HTML注释格式的同步信息
+    if re.search(r'<!-- notebridge_', cleaned_content):
+        # 如果还有残留，强制清理
+        cleaned_content = re.sub(r'<!-- notebridge_[^>]+ -->\s*', '', cleaned_content)
+    
+    # 检查是否还有YAML格式的同步信息
+    if re.search(r'notebridge_', cleaned_content):
+        # 如果还有残留，需要更仔细地处理YAML
+        yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', cleaned_content, re.DOTALL)
+        if yaml_match:
+            yaml_content = yaml_match.group(1)
+            # 移除所有notebridge相关的行
+            yaml_lines = yaml_content.split('\n')
+            filtered_lines = [line for line in yaml_lines if not line.strip().startswith('notebridge_')]
+            if filtered_lines:
+                new_yaml_content = '\n'.join(filtered_lines)
+                cleaned_content = f"---\n{new_yaml_content}\n---\n\n" + cleaned_content[yaml_match.end():]
+            else:
+                # 如果YAML为空，移除整个frontmatter
+                cleaned_content = cleaned_content[yaml_match.end():]
+    
+    # 添加新的同步信息
     sync_header = f"""<!-- notebridge_id: {sync_info['notebridge_id']} -->
 <!-- notebridge_sync_time: {sync_info['notebridge_sync_time']} -->
 <!-- notebridge_source: {sync_info['notebridge_source']} -->
 <!-- notebridge_version: {sync_info['notebridge_version']} -->
 
 """
-    return sync_header + content
+    return sync_header + cleaned_content
 
 def add_sync_info_to_obsidian_content(content, sync_info):
     """
-    在 Obsidian 笔记内容中添加同步信息（YAML frontmatter）
+    在 Obsidian 笔记内容中添加同步信息（YAML frontmatter，彻底避免重复）
     """
+    # 彻底清理所有已存在的同步信息（包括HTML注释和YAML格式）
+    cleaned_content = clean_duplicate_sync_info(content)
+    
+    # 再次验证清理结果，确保没有任何同步信息残留
+    # 检查是否还有HTML注释格式的同步信息
+    if re.search(r'<!-- notebridge_', cleaned_content):
+        # 如果还有残留，强制清理
+        cleaned_content = re.sub(r'<!-- notebridge_[^>]+ -->\s*', '', cleaned_content)
+    
+    # 检查是否还有YAML格式的同步信息
+    if re.search(r'notebridge_', cleaned_content):
+        # 如果还有残留，需要更仔细地处理YAML
+        yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', cleaned_content, re.DOTALL)
+        if yaml_match:
+            yaml_content = yaml_match.group(1)
+            # 移除所有notebridge相关的行
+            yaml_lines = yaml_content.split('\n')
+            filtered_lines = [line for line in yaml_lines if not line.strip().startswith('notebridge_')]
+            if filtered_lines:
+                new_yaml_content = '\n'.join(filtered_lines)
+                cleaned_content = f"---\n{new_yaml_content}\n---\n\n" + cleaned_content[yaml_match.end():]
+            else:
+                # 如果YAML为空，移除整个frontmatter
+                cleaned_content = cleaned_content[yaml_match.end():]
+    
     # 检查是否已有 frontmatter
-    if content.startswith('---'):
+    if cleaned_content.startswith('---'):
         # 已有 frontmatter，在其中添加同步信息
-        yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+        yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', cleaned_content, re.DOTALL)
         if yaml_match:
             try:
-                frontmatter = yaml.safe_load(yaml_match.group(1))
+                yaml_content = yaml_match.group(1)
+                frontmatter = yaml.safe_load(yaml_content) if yaml_content.strip() else {}
                 # 确保 frontmatter 是字典类型
                 if not isinstance(frontmatter, dict):
                     frontmatter = {}
+                # 更新同步信息（覆盖已存在的）
                 frontmatter.update(sync_info)
                 new_frontmatter = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
-                return f"---\n{new_frontmatter}---\n\n" + content[yaml_match.end():]
+                return f"---\n{new_frontmatter}---\n\n" + cleaned_content[yaml_match.end():]
             except yaml.YAMLError:
+                # 如果YAML解析失败，创建新的
                 pass
     
     # 没有 frontmatter 或解析失败，创建新的
     frontmatter = yaml.dump(sync_info, default_flow_style=False, allow_unicode=True)
-    return f"---\n{frontmatter}---\n\n{content}"
+    return f"---\n{frontmatter}---\n\n{cleaned_content}"
 
 # 附件目录
 OBSIDIAN_ATTACHMENT_DIR = os.path.join(obsidian_vault_path, 'attachments')
@@ -1143,7 +1279,7 @@ def update_joplin_note(joplin_note_id, new_content):
 
 def update_obsidian_note(file_path, new_content):
     """
-    更新 Obsidian 笔记内容
+    更新 Obsidian 笔记内容（带重复头部检查）
     """
     try:
         # 检查文件是否存在
@@ -1153,8 +1289,11 @@ def update_obsidian_note(file_path, new_content):
         # 确保目录存在
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
+        # 在写入前检查并修复重复头部
+        cleaned_content = check_and_fix_sync_headers(new_content, os.path.basename(file_path))
+        
         with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(new_content)
+            f.write(cleaned_content)
         return True, None
     except FileNotFoundError:
         return False, "文件不存在"
@@ -1369,26 +1508,48 @@ def perform_deletion_sync(deletions):
     # 删除 Obsidian 文件
     if deletions['joplin_deletions']:
         print(f"\n📝 删除 {len(deletions['joplin_deletions'])} 个 Obsidian 文件...")
+        
+        # 获取当前所有 Obsidian 笔记，用于通过 notebridge_id 查找文件路径
+        current_obsidian_notes = get_obsidian_notes()
+        obsidian_id_to_path = {}
+        
+        for note in current_obsidian_notes:
+            sync_info = extract_sync_info_from_obsidian(note['body'])
+            if sync_info.get('notebridge_id'):
+                obsidian_id_to_path[sync_info['notebridge_id']] = note['path']
+        
         for item in tqdm(deletions['joplin_deletions'], desc="删除 Obsidian 文件"):
-            # 构建文件路径（使用sanitize_filename处理文件名）
-            safe_title = sanitize_filename(item['title'])
-            if item['notebook'] == '未分类':
-                file_path = os.path.join(obsidian_vault_path, f"{safe_title}.md")
-            else:
-                # 处理文件夹路径 - 先替换反斜杠为正斜杠，再分割
-                notebook_path = item['notebook'].replace('\\', '/')
-                safe_folder_parts = [sanitize_filename(part) for part in notebook_path.split('/')]
-                folder_path = os.path.join(obsidian_vault_path, *safe_folder_parts)
-                file_path = os.path.join(folder_path, f"{safe_title}.md")
-            
-            if os.path.exists(file_path):
-                success, result = safe_delete_obsidian_file(file_path)
-                if success:
-                    deletion_results['success'].append(f"删除 Obsidian: {item['title']}")
+            # 通过 notebridge_id 查找文件路径（这是最可靠的方式）
+            notebridge_id = item.get('notebridge_id')
+            if notebridge_id and notebridge_id in obsidian_id_to_path:
+                file_path = obsidian_id_to_path[notebridge_id]
+                if os.path.exists(file_path):
+                    success, result = safe_delete_obsidian_file(file_path)
+                    if success:
+                        deletion_results['success'].append(f"删除 Obsidian: {item['title']}")
+                    else:
+                        deletion_results['failed'].append(f"删除 Obsidian: {item['title']} - {result}")
                 else:
-                    deletion_results['failed'].append(f"删除 Obsidian: {item['title']} - {result}")
+                    deletion_results['failed'].append(f"删除 Obsidian: {item['title']} - 文件不存在")
             else:
-                deletion_results['failed'].append(f"删除 Obsidian: {item['title']} - 文件不存在")
+                # 如果找不到 notebridge_id，回退到文件名匹配（兼容旧版本）
+                safe_title = sanitize_filename(item['title'])
+                if item['notebook'] == '未分类':
+                    file_path = os.path.join(obsidian_vault_path, f"{safe_title}.md")
+                else:
+                    notebook_path = item['notebook'].replace('\\', '/')
+                    safe_folder_parts = [sanitize_filename(part) for part in notebook_path.split('/')]
+                    folder_path = os.path.join(obsidian_vault_path, *safe_folder_parts)
+                    file_path = os.path.join(folder_path, f"{safe_title}.md")
+                
+                if os.path.exists(file_path):
+                    success, result = safe_delete_obsidian_file(file_path)
+                    if success:
+                        deletion_results['success'].append(f"删除 Obsidian: {item['title']} (文件名匹配)")
+                    else:
+                        deletion_results['failed'].append(f"删除 Obsidian: {item['title']} - {result}")
+                else:
+                    deletion_results['failed'].append(f"删除 Obsidian: {item['title']} - 文件不存在")
     
     # 删除 Joplin 笔记
     if deletions['obsidian_deletions']:
@@ -1682,73 +1843,50 @@ def find_and_remove_duplicates():
     # 2. 查找重复笔记
     print("\n🔍 查找重复笔记...")
     
-    # 按内容哈希分组
-    joplin_groups = {}
-    obsidian_groups = {}
-    
-    # 分组 Joplin 笔记
-    for note in joplin_notes:
-        # 计算内容哈希（去除同步信息）
-        clean_body = clean_duplicate_sync_info_keep_oldest(note['body'])
-        content_hash = calculate_content_hash(clean_body)
-        title = note['title']
-        
-        key = f"{title}_{content_hash}"
-        if key not in joplin_groups:
-            joplin_groups[key] = []
-        joplin_groups[key].append(note)
-    
-    # 分组 Obsidian 笔记
-    for note in obsidian_notes:
-        try:
-            with open(note['path'], 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # 计算内容哈希（去除同步信息）
-            clean_content = clean_duplicate_sync_info_keep_oldest(content)
-            content_hash = calculate_content_hash(clean_content)
-            title = note['title']
-            
-            key = f"{title}_{content_hash}"
-            if key not in obsidian_groups:
-                obsidian_groups[key] = []
-            obsidian_groups[key].append(note)
-        except Exception as e:
-            print(f"❌ 读取 Obsidian 笔记失败: {note['title']} - {e}")
+    # 使用新的优化查重功能
+    duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
     
     # 3. 删除重复笔记
     print("\n🗑️ 删除重复笔记...")
     deleted_count = 0
     
-    # 删除 Joplin 重复笔记
-    for key, notes in joplin_groups.items():
-        if len(notes) > 1:
-            print(f"发现 Joplin 重复笔记: {notes[0]['title']} ({len(notes)} 条)")
-            
-            # 保留第一条（优先保留有同步ID的）
-            keep_note = notes[0]
-            for note in notes[1:]:
-                success, result = safe_delete_joplin_note(note['id'])
+    # 删除基于notebridge_id的重复
+    if duplicates.get('id_duplicates'):
+        print(f"处理 {len(duplicates['id_duplicates'])} 对基于ID的重复...")
+        for dup in duplicates['id_duplicates']:
+            dup_type = dup.get('duplicate_type', 'unknown')
+            if dup_type == 'joplin_internal':
+                # Joplin内部重复，删除多余的
+                success, result = safe_delete_joplin_note(dup['obsidian']['id'])
                 if success:
                     deleted_count += 1
-                    print(f"  ✅ 删除: {note['title']} (ID: {note['id']})")
-                else:
-                    print(f"  ❌ 删除失败: {note['title']} - {result}")
+                    print(f"  ✅ 删除 Joplin 重复: {dup['obsidian']['title']}")
+            elif dup_type == 'obsidian_internal':
+                # Obsidian内部重复，删除多余的
+                success = safe_delete_obsidian_file(dup['obsidian']['path'])
+                if success:
+                    deleted_count += 1
+                    print(f"  ✅ 删除 Obsidian 重复: {dup['obsidian']['title']}")
     
-    # 删除 Obsidian 重复笔记
-    for key, notes in obsidian_groups.items():
-        if len(notes) > 1:
-            print(f"发现 Obsidian 重复笔记: {notes[0]['title']} ({len(notes)} 条)")
-            
-            # 保留第一条
-            keep_note = notes[0]
-            for note in notes[1:]:
-                success = safe_delete_obsidian_file(note['path'])
-                if success:
-                    deleted_count += 1
-                    print(f"  ✅ 删除: {note['title']} (路径: {note['path']})")
-                else:
-                    print(f"  ❌ 删除失败: {note['title']}")
+    # 删除内容哈希相同的重复（保留Joplin版本）
+    if duplicates.get('content_hash_duplicates'):
+        print(f"处理 {len(duplicates['content_hash_duplicates'])} 对内容哈希相同的重复...")
+        for dup in duplicates['content_hash_duplicates']:
+            # 保留Joplin版本，删除Obsidian版本
+            success = safe_delete_obsidian_file(dup['obsidian']['path'])
+            if success:
+                deleted_count += 1
+                print(f"  ✅ 删除 Obsidian 重复: {dup['obsidian']['title']}")
+    
+    # 删除标题和内容都相似的重复（保留Joplin版本）
+    if duplicates.get('exact_duplicates'):
+        print(f"处理 {len(duplicates['exact_duplicates'])} 对标题和内容都相似的重复...")
+        for dup in duplicates['exact_duplicates']:
+            # 保留Joplin版本，删除Obsidian版本
+            success = safe_delete_obsidian_file(dup['obsidian']['path'])
+            if success:
+                deleted_count += 1
+                print(f"  ✅ 删除 Obsidian 重复: {dup['obsidian']['title']}")
     
     print(f"\n✅ 清理完成！")
     print(f"📊 统计结果:")
@@ -2178,6 +2316,7 @@ def preprocess_content_for_comparison(content):
     - 去除HTML标签
     - 标准化空白字符
     - 去除链接和图片引用
+    - 更彻底地去除头部信息
     """
     if not content:
         return ""
@@ -2185,8 +2324,15 @@ def preprocess_content_for_comparison(content):
     # 去除HTML注释（同步信息）
     content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
     
-    # 去除YAML frontmatter
+    # 去除YAML frontmatter（更彻底的匹配）
     content = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
+    content = re.sub(r'^---\s*\n.*?\n---\s*$', '', content, flags=re.DOTALL)
+    
+    # 去除Joplin同步信息块
+    content = re.sub(r'<!--\s*notebridge_sync_info.*?-->', '', content, flags=re.DOTALL)
+    
+    # 去除Obsidian同步信息块
+    content = re.sub(r'<!--\s*notebridge_sync_info.*?-->', '', content, flags=re.DOTALL)
     
     # 去除markdown链接 [text](url) -> text
     content = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', content)
@@ -2197,49 +2343,127 @@ def preprocess_content_for_comparison(content):
     # 去除HTML标签
     content = re.sub(r'<[^>]+>', '', content)
     
-    # 去除markdown语法标记
+    # 去除markdown语法标记（更彻底）
     content = re.sub(r'[*_`~#]+', '', content)  # 去除粗体、斜体、代码等标记
+    content = re.sub(r'^#{1,6}\s+', '', content, flags=re.MULTILINE)  # 去除标题标记
+    content = re.sub(r'^\s*[-*+]\s+', '', content, flags=re.MULTILINE)  # 去除列表标记
+    content = re.sub(r'^\s*\d+\.\s+', '', content, flags=re.MULTILINE)  # 去除数字列表标记
+    content = re.sub(r'^\s*>\s+', '', content, flags=re.MULTILINE)  # 去除引用标记
+    content = re.sub(r'^\s*`{3,}.*$', '', content, flags=re.MULTILINE)  # 去除代码块标记
     
-    # 标准化空白字符
-    content = re.sub(r'\s+', ' ', content)
+    # 去除表格标记
+    content = re.sub(r'^\s*\|.*\|.*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^\s*[-|:]+\s*$', '', content, flags=re.MULTILINE)
     
-    # 去除首尾空白
+    # 去除空行和多余空白
+    content = re.sub(r'\n\s*\n', '\n', content)  # 多个空行合并为一个
+    content = re.sub(r'[ \t]+', ' ', content)  # 多个空格合并为一个
+    content = re.sub(r'\n\s+', '\n', content)  # 行首空白
+    content = re.sub(r'\s+\n', '\n', content)  # 行尾空白
+    
+    # 去除首尾空白和空行
     content = content.strip()
     
     return content
 
+# 添加缓存机制
+_content_cache = {}
+
+def get_cached_content_hash(content):
+    """
+    获取内容的缓存哈希值，避免重复计算
+    """
+    if content in _content_cache:
+        return _content_cache[content]
+    
+    processed_content = preprocess_content_for_comparison(content)
+    content_hash = calculate_content_hash(processed_content)
+    _content_cache[content] = content_hash
+    return content_hash
+
+def clear_content_cache():
+    """
+    清空内容缓存
+    """
+    global _content_cache
+    _content_cache.clear()
+
 def find_duplicates_optimized(joplin_notes, obsidian_notes):
     """
-    优化版查重功能（性能更好，更准确）
+    优化版查重功能（优先使用notebridge_id，性能更好，更准确）
     """
     duplicates = {
         'exact_duplicates': [],      # 完全重复（内容哈希相同）
         'title_similar': [],         # 标题相似
         'content_similar': [],       # 内容相似
-        'content_hash_duplicates': [] # 内容哈希相同
+        'content_hash_duplicates': [], # 内容哈希相同
+        'id_duplicates': []          # 基于notebridge_id的重复
     }
     
     print("正在扫描重复内容（优化版）...")
+    
+    # 0. 首先基于 notebridge_id 检测重复（这是最可靠的）
+    joplin_by_id = {}
+    obsidian_by_id = {}
+    
+    for note in joplin_notes:
+        sync_info = extract_sync_info_from_joplin(note['body'])
+        if sync_info.get('notebridge_id'):
+            notebridge_id = sync_info['notebridge_id']
+            if notebridge_id in joplin_by_id:
+                # 发现Joplin内部重复
+                duplicates['id_duplicates'].append({
+                    'joplin': joplin_by_id[notebridge_id],
+                    'obsidian': note,
+                    'similarity': 1.0,
+                    'duplicate_type': 'joplin_internal'
+                })
+            else:
+                joplin_by_id[notebridge_id] = note
+    
+    for note in obsidian_notes:
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        if sync_info.get('notebridge_id'):
+            notebridge_id = sync_info['notebridge_id']
+            if notebridge_id in obsidian_by_id:
+                # 发现Obsidian内部重复
+                duplicates['id_duplicates'].append({
+                    'joplin': obsidian_by_id[notebridge_id],
+                    'obsidian': note,
+                    'similarity': 1.0,
+                    'duplicate_type': 'obsidian_internal'
+                })
+            else:
+                obsidian_by_id[notebridge_id] = note
     
     # 1. 基于内容哈希的完全重复检测（排除空笔记）
     joplin_hashes = {}
     obsidian_hashes = {}
     
-    # 预处理并计算哈希
+    # 预处理并计算哈希（使用缓存）
     for note in joplin_notes:
         if not is_empty_note(note['body']):
-            processed_content = preprocess_content_for_comparison(note['body'])
-            if processed_content:  # 确保预处理后不为空
-                content_hash = calculate_content_hash(processed_content)
+            content_hash = get_cached_content_hash(note['body'])
+            if content_hash:  # 确保预处理后不为空
                 joplin_hashes[content_hash] = note
     
     for note in obsidian_notes:
         if not is_empty_note(note['body']):
-            processed_content = preprocess_content_for_comparison(note['body'])
-            if processed_content:  # 确保预处理后不为空
-                content_hash = calculate_content_hash(processed_content)
+            content_hash = get_cached_content_hash(note['body'])
+            if content_hash:  # 确保预处理后不为空
                 obsidian_hashes[content_hash] = note
                 if content_hash in joplin_hashes:
+                    # 检查是否已经有notebridge_id匹配
+                    joplin_note = joplin_hashes[content_hash]
+                    joplin_sync_info = extract_sync_info_from_joplin(joplin_note['body'])
+                    obsidian_sync_info = extract_sync_info_from_obsidian(note['body'])
+                    
+                    if (joplin_sync_info.get('notebridge_id') and 
+                        obsidian_sync_info.get('notebridge_id') and
+                        joplin_sync_info['notebridge_id'] == obsidian_sync_info['notebridge_id']):
+                        # 这是同一个笔记，不需要标记为重复
+                        continue
+                    
                     duplicates['content_hash_duplicates'].append({
                         'joplin': joplin_hashes[content_hash],
                         'obsidian': note,
@@ -2338,38 +2562,123 @@ def interactive_clean_duplicates():
     obsidian_notes = get_obsidian_notes()
     print(f"共获取到 {len(obsidian_notes)} 条 Obsidian 笔记。")
     
-    # 使用优化版查重
-    duplicates = find_duplicates_optimized(joplin_notes, obsidian_notes)
+    # 使用超快速查重算法
+    duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
     
     # 打印查重报告
     print_duplicate_report(duplicates)
     
-    total_duplicates = (len(duplicates['content_hash_duplicates']) + 
-                       len(duplicates['exact_duplicates']) + 
-                       len(duplicates['title_similar']) + 
-                       len(duplicates['content_similar']))
+    total_duplicates = len(duplicates.get('id_duplicates', [])) + len(duplicates.get('sync_time_conflicts', []))
     
     if total_duplicates == 0:
         print("\n✅ 没有发现重复笔记！")
         return
     
-    print(f"\n💡 发现 {total_duplicates} 对重复/相似笔记")
+    print(f"\n💡 发现 {total_duplicates} 对重复/冲突笔记")
     print("请选择清理策略：")
-    print("1. 自动清理（保留Joplin版本）")
-    print("2. 自动清理（保留Obsidian版本）")
+    print("1. 自动清理同步时间冲突（保留Joplin版本）")
+    print("2. 自动清理同步时间冲突（保留Obsidian版本）")
     print("3. 交互式清理（逐个选择）")
     print("4. 跳过清理")
     
     choice = input("\n请输入选择 (1-4): ").strip()
     
     if choice == "1":
-        auto_clean_duplicates(duplicates, keep_joplin=True)
+        auto_clean_sync_conflicts(duplicates, keep_joplin=True)
     elif choice == "2":
-        auto_clean_duplicates(duplicates, keep_joplin=False)
+        auto_clean_sync_conflicts(duplicates, keep_joplin=False)
     elif choice == "3":
-        interactive_clean_duplicates_step_by_step(duplicates)
+        interactive_clean_sync_conflicts(duplicates)
     else:
         print("跳过清理。")
+
+def auto_clean_sync_conflicts(duplicates, keep_joplin=True):
+    """
+    自动清理同步时间冲突
+    keep_joplin: True保留Joplin版本，False保留Obsidian版本
+    """
+    print(f"\n🤖 开始自动清理同步时间冲突（保留{'Joplin' if keep_joplin else 'Obsidian'}版本）...")
+    
+    cleaned_count = 0
+    
+    # 清理同步时间冲突
+    for dup in duplicates.get('sync_time_conflicts', []):
+        if keep_joplin:
+            success = safe_delete_obsidian_file(dup['obsidian']['path'])
+            if success:
+                cleaned_count += 1
+                print(f"  ✅ 删除 Obsidian: {dup['obsidian']['title']}")
+        else:
+            success = safe_delete_joplin_note(dup['joplin']['id'])
+            if success:
+                cleaned_count += 1
+                print(f"  ✅ 删除 Joplin: {dup['joplin']['title']}")
+    
+    # 清理ID重复
+    for dup in duplicates.get('id_duplicates', []):
+        if keep_joplin:
+            success = safe_delete_obsidian_file(dup['obsidian']['path'])
+            if success:
+                cleaned_count += 1
+                print(f"  ✅ 删除 Obsidian: {dup['obsidian']['title']}")
+        else:
+            success = safe_delete_joplin_note(dup['joplin']['id'])
+            if success:
+                cleaned_count += 1
+                print(f"  ✅ 删除 Joplin: {dup['joplin']['title']}")
+    
+    print(f"\n✅ 自动清理完成，共清理 {cleaned_count} 对重复笔记")
+
+def interactive_clean_sync_conflicts(duplicates):
+    """
+    交互式清理同步时间冲突
+    """
+    print(f"\n🎯 开始交互式清理同步时间冲突...")
+    
+    all_conflicts = []
+    all_conflicts.extend(duplicates.get('sync_time_conflicts', []))
+    all_conflicts.extend(duplicates.get('id_duplicates', []))
+    
+    cleaned_count = 0
+    
+    for i, dup in enumerate(all_conflicts, 1):
+        print(f"\n--- 第 {i}/{len(all_conflicts)} 对冲突笔记 ---")
+        print(f"Joplin: {dup['joplin']['title']} ({dup['joplin']['notebook']})")
+        print(f"Obsidian: {dup['obsidian']['title']} ({dup['obsidian']['folder']})")
+        
+        if 'joplin_time' in dup:
+            print(f"Joplin时间: {dup['joplin_time']}")
+            print(f"Obsidian时间: {dup['obsidian_time']}")
+            print(f"时间差: {dup['time_diff']} 秒")
+        
+        print("\n选择操作：")
+        print("1. 保留 Joplin 版本，删除 Obsidian")
+        print("2. 保留 Obsidian 版本，删除 Joplin")
+        print("3. 跳过这对笔记")
+        print("4. 查看详细内容对比")
+        
+        choice = input("请输入选择 (1-4): ").strip()
+        
+        if choice == "1":
+            success = safe_delete_obsidian_file(dup['obsidian']['path'])
+            if success:
+                cleaned_count += 1
+                print("  ✅ 已删除 Obsidian 版本")
+        elif choice == "2":
+            success = safe_delete_joplin_note(dup['joplin']['id'])
+            if success:
+                cleaned_count += 1
+                print("  ✅ 已删除 Joplin 版本")
+        elif choice == "3":
+            print("  ⏭️  跳过这对笔记")
+        elif choice == "4":
+            show_content_comparison(dup)
+            print("\n请重新选择操作：")
+            continue
+        else:
+            print("  ❌ 无效选择，跳过")
+    
+    print(f"\n✅ 交互式清理完成，共清理 {cleaned_count} 对冲突笔记")
 
 def auto_clean_duplicates(duplicates, keep_joplin=True):
     """
@@ -2483,6 +2792,1682 @@ def show_content_comparison(dup):
     print(o_content)
     print("="*50)
 
+def find_duplicates_ultra_fast(joplin_notes, obsidian_notes):
+    """
+    简化版重复检测算法（只检查ID重复和修改时间冲突）
+    专注于同步相关的重复问题，性能更优
+    """
+    duplicates = {
+        'id_duplicates': [],         # 基于notebridge_id的重复
+        'sync_time_conflicts': []    # 同步时间冲突
+    }
+    
+    print("🚀 正在使用简化算法扫描重复内容...")
+    start_time = time.time()
+    
+    # 第一层：基于 notebridge_id 的快速检测
+    print("  第1层：基于ID的快速检测...")
+    joplin_by_id = {}
+    obsidian_by_id = {}
+    
+    for note in joplin_notes:
+        sync_info = extract_sync_info_from_joplin(note['body'])
+        if sync_info.get('notebridge_id'):
+            notebridge_id = sync_info['notebridge_id']
+            if notebridge_id in joplin_by_id:
+                duplicates['id_duplicates'].append({
+                    'joplin': joplin_by_id[notebridge_id],
+                    'obsidian': note,
+                    'similarity': 1.0,
+                    'duplicate_type': 'joplin_internal'
+                })
+            else:
+                joplin_by_id[notebridge_id] = note
+    
+    for note in obsidian_notes:
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        if sync_info.get('notebridge_id'):
+            notebridge_id = sync_info['notebridge_id']
+            if notebridge_id in obsidian_by_id:
+                duplicates['id_duplicates'].append({
+                    'joplin': obsidian_by_id[notebridge_id],
+                    'obsidian': note,
+                    'similarity': 1.0,
+                    'duplicate_type': 'obsidian_internal'
+                })
+            else:
+                obsidian_by_id[notebridge_id] = note
+    
+    # 第二层：检查同步时间冲突
+    print("  第2层：检查同步时间冲突...")
+    for joplin_id, joplin_note in joplin_by_id.items():
+        if joplin_id in obsidian_by_id:
+            obsidian_note = obsidian_by_id[joplin_id]
+            
+            # 提取同步时间
+            joplin_sync_info = extract_sync_info_from_joplin(joplin_note['body'])
+            obsidian_sync_info = extract_sync_info_from_obsidian(obsidian_note['body'])
+            
+            joplin_time = joplin_sync_info.get('notebridge_sync_time', '')
+            obsidian_time = obsidian_sync_info.get('notebridge_sync_time', '')
+            
+            # 如果两个版本都有同步时间，检查是否冲突
+            if joplin_time and obsidian_time:
+                try:
+                    # 解析时间字符串
+                    j_time = datetime.fromisoformat(joplin_time.replace('Z', '+00:00'))
+                    o_time = datetime.fromisoformat(obsidian_time.replace('Z', '+00:00'))
+                    
+                    # 如果时间差小于1秒，可能是冲突
+                    time_diff = abs((j_time - o_time).total_seconds())
+                    if time_diff < 1:
+                        duplicates['sync_time_conflicts'].append({
+                            'joplin': joplin_note,
+                            'obsidian': obsidian_note,
+                            'joplin_time': joplin_time,
+                            'obsidian_time': obsidian_time,
+                            'time_diff': time_diff
+                        })
+                except Exception as e:
+                    # 时间解析失败，跳过
+                    continue
+    
+    end_time = time.time()
+    detection_time = end_time - start_time
+    print(f"✅ 检测完成，耗时 {detection_time:.2f} 秒")
+    
+    # 打印简化统计信息
+    print_simplified_detection_statistics(joplin_notes, obsidian_notes, duplicates, detection_time)
+    
+    return duplicates
+
+def calculate_similarity_advanced(text1, text2):
+    """
+    高级相似度计算，专门处理去掉头部信息后的内容比较
+    """
+    if not text1 or not text2:
+        return 0.0
+    
+    # 基础相似度
+    base_similarity = SequenceMatcher(None, text1, text2).ratio()
+    
+    # 如果基础相似度很高，直接返回
+    if base_similarity >= 0.95:
+        return base_similarity
+    
+    # 计算核心内容相似度（去除开头和结尾的空白）
+    def get_core_content(text):
+        lines = text.split('\n')
+        # 去除开头和结尾的空行
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return '\n'.join(lines)
+    
+    core1 = get_core_content(text1)
+    core2 = get_core_content(text2)
+    
+    if core1 and core2:
+        core_similarity = SequenceMatcher(None, core1, core2).ratio()
+        # 取基础相似度和核心相似度的最大值
+        return max(base_similarity, core_similarity)
+    
+    return base_similarity
+
+def detect_content_duplicates_without_headers(joplin_notes, obsidian_notes):
+    """
+    专门检测去掉头部信息后内容相同的重复笔记
+    """
+    print("🔍 检测去掉头部信息后的内容重复...")
+    
+    duplicates = []
+    processed_joplin = set()
+    processed_obsidian = set()
+    
+    for j_note in joplin_notes:
+        if j_note['id'] in processed_joplin or is_empty_note(j_note['body']):
+            continue
+            
+        j_content = preprocess_content_for_comparison(j_note['body'])
+        if not j_content:
+            continue
+        
+        for o_note in obsidian_notes:
+            if o_note['path'] in processed_obsidian or is_empty_note(o_note['body']):
+                continue
+                
+            o_content = preprocess_content_for_comparison(o_note['body'])
+            if not o_content:
+                continue
+            
+            # 使用高级相似度计算
+            similarity = calculate_similarity_advanced(j_content, o_content)
+            
+            if similarity >= 0.95:  # 高相似度阈值
+                # 检查是否已经有notebridge_id匹配
+                j_sync_info = extract_sync_info_from_joplin(j_note['body'])
+                o_sync_info = extract_sync_info_from_obsidian(o_note['body'])
+                
+                if (j_sync_info.get('notebridge_id') and 
+                    o_sync_info.get('notebridge_id') and
+                    j_sync_info['notebridge_id'] == o_sync_info['notebridge_id']):
+                    # 这是同一个笔记，跳过
+                    continue
+                
+                duplicates.append({
+                    'joplin': j_note,
+                    'obsidian': o_note,
+                    'similarity': similarity,
+                    'type': 'content_without_headers'
+                })
+                processed_joplin.add(j_note['id'])
+                processed_obsidian.add(o_note['path'])
+                break
+    
+    print(f"  发现 {len(duplicates)} 对去掉头部信息后内容相同的重复")
+    return duplicates
+
+def print_simplified_detection_statistics(joplin_notes, obsidian_notes, duplicates, detection_time):
+    """
+    打印简化版检测统计信息
+    """
+    print("\n" + "="*60)
+    print("📊 简化检测统计报告")
+    print("="*60)
+    
+    # 基础统计
+    print(f"📝 笔记总数：")
+    print(f"  Joplin: {len(joplin_notes)} 条")
+    print(f"  Obsidian: {len(obsidian_notes)} 条")
+    
+    # 重复统计
+    total_duplicates = 0
+    print(f"\n🔍 重复检测结果：")
+    
+    if duplicates.get('id_duplicates'):
+        count = len(duplicates['id_duplicates'])
+        total_duplicates += count
+        print(f"  🚨 ID重复: {count} 对（最严重）")
+    
+    if duplicates.get('sync_time_conflicts'):
+        count = len(duplicates['sync_time_conflicts'])
+        total_duplicates += count
+        print(f"  ⚠️  同步时间冲突: {count} 对")
+    
+    if total_duplicates == 0:
+        print("  ✅ 没有发现重复问题")
+    
+    print(f"\n⏱️  检测耗时: {detection_time:.2f} 秒")
+
+def print_detection_statistics(joplin_notes, obsidian_notes, duplicates, detection_time):
+    """
+    打印检测统计信息
+    """
+    print("\n" + "="*60)
+    print("📊 检测统计报告")
+    print("="*60)
+    
+    # 基础统计
+    print(f"📝 笔记总数：")
+    print(f"  Joplin: {len(joplin_notes)} 条")
+    print(f"  Obsidian: {len(obsidian_notes)} 条")
+    print(f"  总计: {len(joplin_notes) + len(obsidian_notes)} 条")
+    
+    # 性能统计
+    print(f"\n⚡ 性能统计：")
+    print(f"  检测耗时: {detection_time:.2f} 秒")
+    print(f"  平均速度: {(len(joplin_notes) + len(obsidian_notes)) / detection_time:.1f} 条/秒")
+    
+    # 重复统计
+    print(f"\n🔍 重复检测结果：")
+    id_dups = len(duplicates.get('id_duplicates', []))
+    hash_dups = len(duplicates.get('content_hash_duplicates', []))
+    exact_dups = len(duplicates.get('exact_duplicates', []))
+    title_dups = len(duplicates.get('title_similar', []))
+    content_dups = len(duplicates.get('content_similar', []))
+    header_dups = len(duplicates.get('content_without_headers', []))
+    
+    total_dups = id_dups + hash_dups + exact_dups + title_dups + content_dups + header_dups
+    
+    print(f"  ID重复: {id_dups} 对")
+    print(f"  内容哈希重复: {hash_dups} 对")
+    print(f"  完全重复: {exact_dups} 对")
+    print(f"  标题相似: {title_dups} 对")
+    print(f"  内容相似: {content_dups} 对")
+    print(f"  去头部后重复: {header_dups} 对")
+    print(f"  总计重复: {total_dups} 对")
+    
+    # 重复率统计
+    total_notes = len(joplin_notes) + len(obsidian_notes)
+    if total_notes > 0:
+        duplicate_rate = (total_dups * 2) / total_notes * 100
+        print(f"\n📈 重复率: {duplicate_rate:.1f}%")
+        
+        if duplicate_rate > 20:
+            print("⚠️  重复率较高，建议及时清理")
+        elif duplicate_rate > 10:
+            print("💡 重复率中等，建议适当清理")
+        else:
+            print("✅ 重复率较低，状态良好")
+    
+    # 缓存统计
+    cache_size = len(_content_cache)
+    print(f"\n💾 缓存统计：")
+    print(f"  缓存条目: {cache_size} 个")
+    if cache_size > 0:
+        print(f"  缓存命中率: 高（避免重复计算）")
+    
+    print("="*60)
+
+def quick_duplicate_test():
+    """
+    快速重复检测测试，用于验证新算法的性能
+    """
+    print("🧪 开始快速重复检测测试...")
+    
+    # 获取笔记
+    print("正在获取笔记数据...")
+    joplin_notes = get_joplin_notes()
+    obsidian_notes = get_obsidian_notes()
+    
+    print(f"获取到 {len(joplin_notes)} 条 Joplin 笔记，{len(obsidian_notes)} 条 Obsidian 笔记")
+    
+    # 测试旧算法
+    print("\n📊 测试旧算法性能...")
+    start_time = time.time()
+    old_duplicates = find_duplicates_optimized(joplin_notes, obsidian_notes)
+    old_time = time.time() - start_time
+    
+    # 清空缓存
+    clear_content_cache()
+    
+    # 测试新算法
+    print("\n📊 测试新算法性能...")
+    start_time = time.time()
+    new_duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
+    new_time = time.time() - start_time
+    
+    # 性能对比
+    print("\n" + "="*60)
+    print("🏁 性能对比结果")
+    print("="*60)
+    print(f"旧算法耗时: {old_time:.2f} 秒")
+    print(f"新算法耗时: {new_time:.2f} 秒")
+    
+    if new_time > 0:
+        speedup = old_time / new_time
+        print(f"性能提升: {speedup:.1f}x")
+        
+        if speedup >= 2:
+            print("🎉 性能提升显著！")
+        elif speedup >= 1.5:
+            print("👍 性能有所提升")
+        else:
+            print("📈 性能略有提升")
+    
+    # 检测结果对比
+    print(f"\n🔍 检测结果对比：")
+    
+    def count_duplicates(duplicates):
+        return (len(duplicates.get('id_duplicates', [])) +
+                len(duplicates.get('content_hash_duplicates', [])) +
+                len(duplicates.get('exact_duplicates', [])) +
+                len(duplicates.get('title_similar', [])) +
+                len(duplicates.get('content_similar', [])) +
+                len(duplicates.get('content_without_headers', [])))
+    
+    old_count = count_duplicates(old_duplicates)
+    new_count = count_duplicates(new_duplicates)
+    
+    print(f"旧算法检测到: {old_count} 对重复")
+    print(f"新算法检测到: {new_count} 对重复")
+    
+    if new_count > old_count:
+        print(f"🎯 新算法多检测到 {new_count - old_count} 对重复（更准确）")
+    elif new_count < old_count:
+        print(f"⚠️  新算法少检测到 {old_count - new_count} 对重复")
+    else:
+        print("✅ 检测结果一致")
+    
+    print("="*60)
+
+def find_title_similar_notes_only(joplin_notes, obsidian_notes, similarity_threshold=0.7):
+    """
+    只检测标题相似的笔记，让用户手工决定
+    similarity_threshold: 标题相似度阈值，默认0.7（70%）
+    """
+    print(f"🔍 正在检测标题相似度 ≥ {similarity_threshold*100:.0f}% 的笔记...")
+    start_time = time.time()
+    
+    similar_notes = []
+    processed_pairs = set()  # 避免重复检测同一对笔记
+    
+    # 按标题长度分组，只比较长度相近的标题
+    joplin_by_length = {}
+    obsidian_by_length = {}
+    
+    for note in joplin_notes:
+        title_length = len(note['title'])
+        if title_length not in joplin_by_length:
+            joplin_by_length[title_length] = []
+        joplin_by_length[title_length].append(note)
+    
+    for note in obsidian_notes:
+        title_length = len(note['title'])
+        if title_length not in obsidian_by_length:
+            obsidian_by_length[title_length] = []
+        obsidian_by_length[title_length].append(note)
+    
+    # 只比较标题长度相近的笔记（±5个字符）
+    for j_length, j_notes in joplin_by_length.items():
+        for j_note in j_notes:
+            # 找到标题长度相近的Obsidian笔记
+            similar_obsidian_notes = []
+            for o_length in range(max(1, j_length - 5), j_length + 6):
+                if o_length in obsidian_by_length:
+                    for o_note in obsidian_by_length[o_length]:
+                        # 避免重复检测
+                        pair_key = (j_note['id'], o_note['path'])
+                        if pair_key in processed_pairs:
+                            continue
+                        
+                        # 计算标题相似度
+                        title_similarity = fuzz.ratio(j_note['title'], o_note['title']) / 100.0
+                        
+                        if title_similarity >= similarity_threshold:
+                            similar_obsidian_notes.append((o_note, title_similarity))
+                            processed_pairs.add(pair_key)
+            
+            # 如果找到相似的笔记，添加到结果中
+            for o_note, title_similarity in similar_obsidian_notes:
+                similar_notes.append({
+                    'joplin': j_note,
+                    'obsidian': o_note,
+                    'title_similarity': title_similarity,
+                    'joplin_title': j_note['title'],
+                    'obsidian_title': o_note['title'],
+                    'joplin_notebook': j_note.get('notebook', '未知'),
+                    'obsidian_folder': o_note.get('folder', '未知')
+                })
+    
+    end_time = time.time()
+    detection_time = end_time - start_time
+    
+    print(f"✅ 检测完成，耗时 {detection_time:.2f} 秒")
+    print(f"📊 发现 {len(similar_notes)} 对标题相似的笔记")
+    
+    return similar_notes
+
+def interactive_title_similarity_check(similar_notes):
+    """
+    交互式检查标题相似的笔记，让用户手工决定
+    """
+    if not similar_notes:
+        print("✅ 没有发现标题相似的笔记！")
+        return
+    
+    print(f"\n🎯 开始交互式检查 {len(similar_notes)} 对标题相似的笔记...")
+    print("="*80)
+    
+    # 按相似度排序，相似度高的优先显示
+    similar_notes.sort(key=lambda x: x['title_similarity'], reverse=True)
+    
+    duplicates_to_clean = []
+    skipped_pairs = []
+    
+    for i, pair in enumerate(similar_notes, 1):
+        print(f"\n--- 第 {i}/{len(similar_notes)} 对 ---")
+        print(f"📝 Joplin: {pair['joplin_title']}")
+        print(f"   笔记本: {pair['joplin_notebook']}")
+        print(f"📝 Obsidian: {pair['obsidian_title']}")
+        print(f"   文件夹: {pair['obsidian_folder']}")
+        print(f"🎯 标题相似度: {pair['title_similarity']:.1%}")
+        
+        # 显示内容预览
+        j_content = pair['joplin']['body'][:200] + "..." if len(pair['joplin']['body']) > 200 else pair['joplin']['body']
+        o_content = pair['obsidian']['body'][:200] + "..." if len(pair['obsidian']['body']) > 200 else pair['obsidian']['body']
+        
+        print(f"\n📄 Joplin内容预览:")
+        print(f"   {j_content}")
+        print(f"\n📄 Obsidian内容预览:")
+        print(f"   {o_content}")
+        
+        print(f"\n选择操作：")
+        print("1. 这是重复笔记，删除Obsidian版本")
+        print("2. 这是重复笔记，删除Joplin版本")
+        print("3. 这不是重复，跳过")
+        print("4. 查看完整内容对比")
+        print("5. 退出检查")
+        
+        while True:
+            choice = input("\n请输入选择 (1-5): ").strip()
+            
+            if choice == "1":
+                duplicates_to_clean.append({
+                    'joplin': pair['joplin'],
+                    'obsidian': pair['obsidian'],
+                    'action': 'delete_obsidian',
+                    'reason': '用户确认重复'
+                })
+                print("✅ 标记为重复，将删除Obsidian版本")
+                break
+            elif choice == "2":
+                duplicates_to_clean.append({
+                    'joplin': pair['joplin'],
+                    'obsidian': pair['obsidian'],
+                    'action': 'delete_joplin',
+                    'reason': '用户确认重复'
+                })
+                print("✅ 标记为重复，将删除Joplin版本")
+                break
+            elif choice == "3":
+                skipped_pairs.append(pair)
+                print("⏭️  跳过，标记为非重复")
+                break
+            elif choice == "4":
+                show_detailed_comparison(pair)
+                print("\n请重新选择操作：")
+                continue
+            elif choice == "5":
+                print("👋 退出检查")
+                return duplicates_to_clean, skipped_pairs
+            else:
+                print("❌ 无效选择，请输入 1-5")
+                continue
+    
+    print(f"\n📊 检查完成！")
+    print(f"  标记为重复: {len(duplicates_to_clean)} 对")
+    print(f"  标记为非重复: {len(skipped_pairs)} 对")
+    
+    return duplicates_to_clean, skipped_pairs
+
+def show_detailed_comparison(pair):
+    """
+    显示详细的笔记内容对比
+    """
+    print("\n" + "="*80)
+    print("📋 详细内容对比")
+    print("="*80)
+    
+    print(f"\n📝 Joplin笔记:")
+    print(f"标题: {pair['joplin_title']}")
+    print(f"笔记本: {pair['joplin_notebook']}")
+    print(f"内容长度: {len(pair['joplin']['body'])} 字符")
+    print("-" * 40)
+    print(pair['joplin']['body'])
+    
+    print(f"\n📝 Obsidian笔记:")
+    print(f"标题: {pair['obsidian_title']}")
+    print(f"文件夹: {pair['obsidian_folder']}")
+    print(f"内容长度: {len(pair['obsidian']['body'])} 字符")
+    print("-" * 40)
+    print(pair['obsidian']['body'])
+    
+    print("="*80)
+
+def execute_title_similarity_cleanup(duplicates_to_clean):
+    """
+    执行标题相似度清理
+    """
+    if not duplicates_to_clean:
+        print("✅ 没有需要清理的重复笔记")
+        return
+    
+    print(f"\n🧹 开始清理 {len(duplicates_to_clean)} 对重复笔记...")
+    
+    success_count = 0
+    failed_count = 0
+    
+    for dup in duplicates_to_clean:
+        try:
+            if dup['action'] == 'delete_obsidian':
+                success = safe_delete_obsidian_file(dup['obsidian']['path'])
+                if success:
+                    print(f"  ✅ 删除 Obsidian: {dup['obsidian_title']}")
+                    success_count += 1
+                else:
+                    print(f"  ❌ 删除失败 Obsidian: {dup['obsidian_title']}")
+                    failed_count += 1
+            elif dup['action'] == 'delete_joplin':
+                success = safe_delete_joplin_note(dup['joplin']['id'])
+                if success:
+                    print(f"  ✅ 删除 Joplin: {dup['joplin_title']}")
+                    success_count += 1
+                else:
+                    print(f"  ❌ 删除失败 Joplin: {dup['joplin_title']}")
+                    failed_count += 1
+        except Exception as e:
+            print(f"  ❌ 清理出错: {e}")
+            failed_count += 1
+    
+    print(f"\n📊 清理完成！")
+    print(f"  成功: {success_count} 个")
+    print(f"  失败: {failed_count} 个")
+
+def quick_title_similarity_check():
+    """
+    快速标题相似度检测主函数
+    """
+    print("🎯 启动快速标题相似度检测模式...")
+    print("📝 此模式只检测标题相似的笔记，让你手工决定哪些是重复的")
+    
+    # 获取笔记
+    print("\n正在获取笔记数据...")
+    joplin_notes = get_joplin_notes()
+    obsidian_notes = get_obsidian_notes()
+    
+    print(f"获取到 {len(joplin_notes)} 条 Joplin 笔记，{len(obsidian_notes)} 条 Obsidian 笔记")
+    
+    # 询问相似度阈值
+    print(f"\n🔧 设置检测参数：")
+    print("标题相似度阈值（建议70%-90%）：")
+    print("  70% - 检测更多可能的重复（包括部分相似）")
+    print("  80% - 平衡检测数量和准确性")
+    print("  90% - 只检测高度相似的标题")
+    
+    while True:
+        try:
+            threshold_input = input("\n请输入相似度阈值 (70-90，默认80): ").strip()
+            if not threshold_input:
+                similarity_threshold = 0.8
+                break
+            similarity_threshold = int(threshold_input) / 100.0
+            if 0.7 <= similarity_threshold <= 0.9:
+                break
+            else:
+                print("❌ 请输入70-90之间的数字")
+        except ValueError:
+            print("❌ 请输入有效的数字")
+    
+    print(f"✅ 设置相似度阈值为 {similarity_threshold*100:.0f}%")
+    
+    # 检测标题相似的笔记
+    similar_notes = find_title_similar_notes_only(joplin_notes, obsidian_notes, similarity_threshold)
+    
+    if not similar_notes:
+        print("✅ 没有发现标题相似的笔记！")
+        return
+    
+    # 交互式检查
+    duplicates_to_clean, skipped_pairs = interactive_title_similarity_check(similar_notes)
+    
+    if not duplicates_to_clean:
+        print("✅ 没有标记为重复的笔记")
+        return
+    
+    # 确认清理
+    print(f"\n⚠️  确认清理 {len(duplicates_to_clean)} 对重复笔记？")
+    print("这将永久删除选中的笔记，无法恢复！")
+    
+    confirm = input("输入 'yes' 确认清理，其他任意键取消: ").strip().lower()
+    
+    if confirm == 'yes':
+        execute_title_similarity_cleanup(duplicates_to_clean)
+    else:
+        print("❌ 取消清理操作")
+
+def find_joplin_imported_notes_in_obsidian(obsidian_notes):
+    """
+    检测Obsidian中来自Joplin的笔记
+    """
+    print("🔍 正在检测Obsidian中来自Joplin的笔记...")
+    
+    joplin_imported_notes = []
+    other_notes = []
+    
+    for note in obsidian_notes:
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        
+        if sync_info.get('notebridge_source') == 'joplin':
+            joplin_imported_notes.append({
+                'note': note,
+                'sync_info': sync_info,
+                'notebridge_id': sync_info.get('notebridge_id'),
+                'sync_time': sync_info.get('sync_time'),
+                'version': sync_info.get('version', '1')
+            })
+        else:
+            other_notes.append(note)
+    
+    print(f"📊 检测结果：")
+    print(f"  来自Joplin的笔记: {len(joplin_imported_notes)} 条")
+    print(f"  其他笔记: {len(other_notes)} 条")
+    
+    return joplin_imported_notes, other_notes
+
+def check_note_modification_status(joplin_imported_notes, joplin_notes):
+    """
+    检查笔记是否在Obsidian中被修改过
+    """
+    print("🔍 正在检查笔记修改状态...")
+    
+    # 建立Joplin笔记的映射
+    joplin_by_id = {}
+    for note in joplin_notes:
+        sync_info = extract_sync_info_from_joplin(note['body'])
+        if sync_info.get('notebridge_id'):
+            joplin_by_id[sync_info['notebridge_id']] = note
+    
+    unmodified_notes = []
+    modified_notes = []
+    orphaned_notes = []  # 在Obsidian中但Joplin中不存在的笔记
+    
+    for obsidian_note_info in joplin_imported_notes:
+        notebridge_id = obsidian_note_info['notebridge_id']
+        obsidian_note = obsidian_note_info['note']
+        
+        if notebridge_id in joplin_by_id:
+            # 找到对应的Joplin笔记，比较内容
+            joplin_note = joplin_by_id[notebridge_id]
+            
+            # 预处理内容进行比较
+            j_content = preprocess_content_for_comparison(joplin_note['body'])
+            o_content = preprocess_content_for_comparison(obsidian_note['body'])
+            
+            # 计算相似度
+            similarity = calculate_similarity_advanced(j_content, o_content)
+            
+            if similarity >= 0.95:  # 95%以上相似认为是未修改
+                unmodified_notes.append({
+                    'obsidian_note': obsidian_note,
+                    'joplin_note': joplin_note,
+                    'similarity': similarity,
+                    'sync_info': obsidian_note_info['sync_info']
+                })
+            else:
+                modified_notes.append({
+                    'obsidian_note': obsidian_note,
+                    'joplin_note': joplin_note,
+                    'similarity': similarity,
+                    'sync_info': obsidian_note_info['sync_info']
+                })
+        else:
+            # 在Obsidian中存在但在Joplin中不存在
+            orphaned_notes.append(obsidian_note_info)
+    
+    print(f"📊 修改状态检查结果：")
+    print(f"  未修改的笔记: {len(unmodified_notes)} 条")
+    print(f"  已修改的笔记: {len(modified_notes)} 条")
+    print(f"  孤立笔记（Joplin中已删除）: {len(orphaned_notes)} 条")
+    
+    return unmodified_notes, modified_notes, orphaned_notes
+
+def interactive_clean_joplin_imported_notes():
+    """
+    交互式清理Obsidian中来自Joplin的笔记
+    """
+    print("🧹 启动Obsidian中Joplin导入笔记清理模式...")
+    print("📝 此功能将检测并清理Obsidian中来自Joplin的笔记")
+    
+    # 获取笔记
+    print("\n正在获取笔记数据...")
+    joplin_notes = get_joplin_notes()
+    obsidian_notes = get_obsidian_notes()
+    
+    print(f"获取到 {len(joplin_notes)} 条 Joplin 笔记，{len(obsidian_notes)} 条 Obsidian 笔记")
+    
+    # 检测来自Joplin的笔记
+    joplin_imported_notes, other_notes = find_joplin_imported_notes_in_obsidian(obsidian_notes)
+    
+    if not joplin_imported_notes:
+        print("✅ Obsidian中没有发现来自Joplin的笔记！")
+        return
+    
+    # 检查修改状态
+    unmodified_notes, modified_notes, orphaned_notes = check_note_modification_status(
+        joplin_imported_notes, joplin_notes
+    )
+    
+    print(f"\n📋 清理选项：")
+    print("1. 删除所有来自Joplin的笔记（包括已修改的）")
+    print("2. 只删除未修改的笔记（推荐）")
+    print("3. 只删除孤立的笔记（Joplin中已删除的）")
+    print("4. 查看详细列表后选择")
+    print("5. 取消操作")
+    
+    while True:
+        choice = input("\n请输入选择 (1-5): ").strip()
+        
+        if choice == "1":
+            notes_to_delete = joplin_imported_notes
+            print(f"⚠️  将删除所有 {len(notes_to_delete)} 条来自Joplin的笔记")
+            break
+        elif choice == "2":
+            notes_to_delete = [item['obsidian_note'] for item in unmodified_notes]
+            print(f"✅ 将删除 {len(notes_to_delete)} 条未修改的笔记")
+            break
+        elif choice == "3":
+            notes_to_delete = [item['note'] for item in orphaned_notes]
+            print(f"🗑️  将删除 {len(notes_to_delete)} 条孤立的笔记")
+            break
+        elif choice == "4":
+            show_detailed_imported_notes_list(unmodified_notes, modified_notes, orphaned_notes)
+            print("\n请重新选择操作：")
+            continue
+        elif choice == "5":
+            print("❌ 取消操作")
+            return
+        else:
+            print("❌ 无效选择，请输入 1-5")
+            continue
+    
+    if not notes_to_delete:
+        print("✅ 没有需要删除的笔记")
+        return
+    
+    # 确认删除
+    print(f"\n⚠️  确认删除 {len(notes_to_delete)} 条笔记？")
+    print("这将永久删除选中的笔记，无法恢复！")
+    
+    confirm = input("输入 'yes' 确认删除，其他任意键取消: ").strip().lower()
+    
+    if confirm == 'yes':
+        execute_bulk_delete(notes_to_delete)
+    else:
+        print("❌ 取消删除操作")
+
+def show_detailed_imported_notes_list(unmodified_notes, modified_notes, orphaned_notes):
+    """
+    显示详细的导入笔记列表
+    """
+    print("\n" + "="*80)
+    print("📋 详细笔记列表")
+    print("="*80)
+    
+    if unmodified_notes:
+        print(f"\n📝 未修改的笔记 ({len(unmodified_notes)} 条):")
+        for i, item in enumerate(unmodified_notes[:10], 1):
+            print(f"  {i}. {item['obsidian_note']['title']} (相似度: {item['similarity']:.1%})")
+        if len(unmodified_notes) > 10:
+            print(f"  ... 还有 {len(unmodified_notes) - 10} 条")
+    
+    if modified_notes:
+        print(f"\n📝 已修改的笔记 ({len(modified_notes)} 条):")
+        for i, item in enumerate(modified_notes[:10], 1):
+            print(f"  {i}. {item['obsidian_note']['title']} (相似度: {item['similarity']:.1%})")
+        if len(modified_notes) > 10:
+            print(f"  ... 还有 {len(modified_notes) - 10} 条")
+    
+    if orphaned_notes:
+        print(f"\n📝 孤立的笔记 ({len(orphaned_notes)} 条):")
+        for i, item in enumerate(orphaned_notes[:10], 1):
+            print(f"  {i}. {item['note']['title']}")
+        if len(orphaned_notes) > 10:
+            print(f"  ... 还有 {len(orphaned_notes) - 10} 条")
+    
+    print("="*80)
+
+def execute_bulk_delete(notes_to_delete):
+    """
+    执行批量删除
+    """
+    print(f"\n🧹 开始删除 {len(notes_to_delete)} 条笔记...")
+    
+    success_count = 0
+    failed_count = 0
+    
+    for i, note in enumerate(notes_to_delete, 1):
+        try:
+            print(f"  正在删除 ({i}/{len(notes_to_delete)}): {note['title']}")
+            success = safe_delete_obsidian_file(note['path'])
+            
+            if success:
+                success_count += 1
+                print(f"    ✅ 删除成功")
+            else:
+                failed_count += 1
+                print(f"    ❌ 删除失败")
+                
+        except Exception as e:
+            failed_count += 1
+            print(f"    ❌ 删除出错: {e}")
+    
+    print(f"\n📊 删除完成！")
+    print(f"  成功: {success_count} 条")
+    print(f"  失败: {failed_count} 条")
+    
+    if success_count > 0:
+        print(f"\n💡 建议：")
+        print(f"  现在可以运行 'python notebridge.py sync --force' 重新同步所有笔记")
+
+def debug_sync_info_extraction():
+    """
+    调试同步信息提取功能
+    """
+    print("🔍 调试同步信息提取功能...")
+    
+    # 获取一些Obsidian笔记样本
+    obsidian_notes = get_obsidian_notes()
+    
+    print(f"获取到 {len(obsidian_notes)} 条 Obsidian 笔记")
+    
+    # 检查前10条笔记的同步信息
+    joplin_imported_count = 0
+    other_count = 0
+    
+    for i, note in enumerate(obsidian_notes[:10], 1):
+        print(f"\n--- 第 {i} 条笔记 ---")
+        print(f"标题: {note['title']}")
+        print(f"路径: {note['path']}")
+        
+        # 提取同步信息
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        print(f"同步信息: {sync_info}")
+        
+        # 检查是否包含同步信息
+        if sync_info.get('notebridge_source') == 'joplin':
+            joplin_imported_count += 1
+            print("✅ 检测到来自Joplin的笔记")
+        else:
+            other_count += 1
+            print("❌ 未检测到同步信息或来源不是Joplin")
+        
+        # 显示内容的前200个字符
+        content_preview = note['body'][:200] + "..." if len(note['body']) > 200 else note['body']
+        print(f"内容预览: {content_preview}")
+    
+    print(f"\n📊 前10条笔记统计：")
+    print(f"  来自Joplin: {joplin_imported_count} 条")
+    print(f"  其他: {other_count} 条")
+    
+    # 搜索包含同步信息的笔记
+    print(f"\n🔍 搜索包含同步信息的笔记...")
+    sync_info_notes = []
+    
+    for note in obsidian_notes:
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        if sync_info:  # 有任何同步信息
+            sync_info_notes.append({
+                'note': note,
+                'sync_info': sync_info
+            })
+    
+    print(f"找到 {len(sync_info_notes)} 条包含同步信息的笔记")
+    
+    if sync_info_notes:
+        print(f"\n📋 同步信息示例：")
+        for i, item in enumerate(sync_info_notes[:5], 1):
+            print(f"  {i}. {item['note']['title']}")
+            print(f"     同步信息: {item['sync_info']}")
+    
+    # 搜索包含"notebridge_source"的笔记
+    print(f"\n🔍 搜索包含'notebridge_source'的笔记...")
+    source_notes = []
+    
+    for note in obsidian_notes:
+        if 'notebridge_source' in note['body']:
+            source_notes.append(note)
+    
+    print(f"找到 {len(source_notes)} 条包含'notebridge_source'的笔记")
+    
+    if source_notes:
+        print(f"\n📋 包含'notebridge_source'的笔记示例：")
+        for i, note in enumerate(source_notes[:3], 1):
+            print(f"  {i}. {note['title']}")
+            # 显示包含notebridge_source的行
+            lines = note['body'].split('\n')
+            for line in lines:
+                if 'notebridge_source' in line:
+                    print(f"     行: {line.strip()}")
+                    break
+
+def clean_unmodified_joplin_imports():
+    """
+    清理Obsidian中来自Joplin且未修改过的笔记
+    通过比较notebridge_sync_time和文件修改时间来判断
+    """
+    print("🧹 清理Obsidian中未修改的Joplin导入笔记...")
+    
+    # 获取笔记
+    print("正在获取Obsidian笔记...")
+    obsidian_notes = get_obsidian_notes()
+    print(f"获取到 {len(obsidian_notes)} 条 Obsidian 笔记")
+    
+    # 检测来自Joplin的笔记
+    joplin_imported_notes = []
+    other_notes = []
+    
+    for note in obsidian_notes:
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        
+        if sync_info.get('notebridge_source') == 'joplin':
+            joplin_imported_notes.append({
+                'note': note,
+                'sync_info': sync_info,
+                'sync_time': sync_info.get('notebridge_sync_time'),
+                'file_path': note['path']
+            })
+        else:
+            other_notes.append(note)
+    
+    print(f"📊 检测结果：")
+    print(f"  来自Joplin的笔记: {len(joplin_imported_notes)} 条")
+    print(f"  其他笔记: {len(other_notes)} 条")
+    
+    if not joplin_imported_notes:
+        print("✅ 没有发现来自Joplin的笔记！")
+        return
+    
+    # 检查哪些笔记未修改过
+    unmodified_notes = []
+    modified_notes = []
+    
+    for note_info in joplin_imported_notes:
+        note = note_info['note']
+        sync_time_str = note_info['sync_time']
+        file_path = note_info['file_path']
+        
+        if not sync_time_str:
+            # 没有同步时间，跳过
+            continue
+        
+        try:
+            # 解析同步时间
+            sync_time = datetime.fromisoformat(sync_time_str.replace('Z', '+00:00'))
+            
+            # 获取文件修改时间
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+            
+            # 如果文件修改时间在同步时间之后，说明被修改过
+            if file_mtime > sync_time:
+                modified_notes.append(note_info)
+            else:
+                unmodified_notes.append(note_info)
+                
+        except Exception as e:
+            print(f"⚠️  处理笔记 '{note['title']}' 时出错: {e}")
+            # 出错时保守处理，不删除
+            modified_notes.append(note_info)
+    
+    print(f"\n📊 修改状态检查结果：")
+    print(f"  未修改的笔记: {len(unmodified_notes)} 条")
+    print(f"  已修改的笔记: {len(modified_notes)} 条")
+    
+    if not unmodified_notes:
+        print("✅ 没有发现未修改的Joplin导入笔记！")
+        return
+    
+    # 显示要删除的笔记列表
+    print(f"\n📋 将要删除的未修改笔记（前10条）：")
+    for i, note_info in enumerate(unmodified_notes[:10], 1):
+        note = note_info['note']
+        sync_time = note_info['sync_time']
+        print(f"  {i}. {note['title']} (同步时间: {sync_time})")
+    
+    if len(unmodified_notes) > 10:
+        print(f"  ... 还有 {len(unmodified_notes) - 10} 条")
+    
+    # 确认删除
+    print(f"\n⚠️  确认删除 {len(unmodified_notes)} 条未修改的Joplin导入笔记？")
+    print("这将永久删除选中的笔记，无法恢复！")
+    
+    confirm = input("输入 'yes' 确认删除，其他任意键取消: ").strip().lower()
+    
+    if confirm == 'yes':
+        execute_bulk_delete([note_info['note'] for note_info in unmodified_notes])
+    else:
+        print("❌ 取消删除操作")
+
+def check_and_fix_sync_headers(content, note_title=""):
+    """
+    检查并修复单个笔记的重复同步头部（预防性检查）
+    """
+    # 检查是否有重复的同步信息
+    joplin_ids = re.findall(r'<!-- notebridge_id: ([a-f0-9-]+) -->', content)
+    yaml_ids = re.findall(r'notebridge_id: ([a-f0-9-]+)', content)
+    
+    # 如果发现重复，立即修复
+    if len(joplin_ids) + len(yaml_ids) > 1:
+        if note_title:
+            print(f"  🔧 检测到重复头部，正在修复: {note_title}")
+        return clean_duplicate_sync_info(content)
+    
+    return content
+
+def fix_duplicate_sync_headers():
+    """
+    修复重复的同步信息头部（增强版）
+    专门处理HTML注释和YAML格式混合的重复头部问题
+    """
+    print("\n🔧 开始修复重复的同步信息头部...")
+    
+    # 获取所有笔记
+    print("正在获取 Joplin 笔记...")
+    joplin_notes = get_joplin_notes()
+    print(f"共获取到 {len(joplin_notes)} 条 Joplin 笔记。")
+    
+    print("正在获取 Obsidian 笔记...")
+    obsidian_notes = get_obsidian_notes()
+    print(f"共获取到 {len(obsidian_notes)} 条 Obsidian 笔记。")
+    
+    # 修复 Joplin 笔记
+    print("\n🔧 修复 Joplin 笔记中的重复头部...")
+    fixed_joplin_count = 0
+    
+    for note in tqdm(joplin_notes, desc="修复 Joplin 笔记"):
+        original_body = note['body']
+        cleaned_body = clean_duplicate_sync_info(original_body)
+        
+        if cleaned_body != original_body:
+            success, result = update_joplin_note(note['id'], cleaned_body)
+            if success:
+                fixed_joplin_count += 1
+                print(f"  ✅ 修复: {note['title']}")
+            else:
+                print(f"❌ 修复 Joplin 笔记失败: {note['title']} - {result}")
+    
+    # 修复 Obsidian 笔记
+    print("\n🔧 修复 Obsidian 笔记中的重复头部...")
+    fixed_obsidian_count = 0
+    
+    for note in tqdm(obsidian_notes, desc="修复 Obsidian 笔记"):
+        try:
+            with open(note['path'], 'r', encoding='utf-8') as f:
+                original_content = f.read()
+            
+            cleaned_content = clean_duplicate_sync_info(original_content)
+            if cleaned_content != original_content:
+                with open(note['path'], 'w', encoding='utf-8') as f:
+                    f.write(cleaned_content)
+                fixed_obsidian_count += 1
+                print(f"  ✅ 修复: {note['title']}")
+        except Exception as e:
+            print(f"❌ 修复 Obsidian 笔记失败: {note['title']} - {e}")
+    
+    print(f"\n✅ 修复完成！")
+    print(f"  修复 Joplin 笔记: {fixed_joplin_count} 条")
+    print(f"  修复 Obsidian 笔记: {fixed_obsidian_count} 条")
+    print(f"  总计修复: {fixed_joplin_count + fixed_obsidian_count} 条")
+    
+    if fixed_joplin_count + fixed_obsidian_count > 0:
+        print(f"\n💡 修复说明：")
+        print(f"  - 清理了重复的HTML注释格式同步信息")
+        print(f"  - 清理了重复的YAML格式同步信息")
+        print(f"  - 保留了最新的同步信息")
+        print(f"  - 统一了同步信息格式")
+    else:
+        print(f"\n✅ 没有发现需要修复的重复头部！")
+
+def prevent_duplicate_headers():
+    """
+    预防性检查重复头部，在同步前自动检测和修复
+    """
+    print("\n🛡️ 启动预防性重复头部检查...")
+    
+    # 获取所有笔记
+    print("正在获取 Joplin 笔记...")
+    joplin_notes = get_joplin_notes()
+    print(f"共获取到 {len(joplin_notes)} 条 Joplin 笔记。")
+    
+    print("正在获取 Obsidian 笔记...")
+    obsidian_notes = get_obsidian_notes()
+    print(f"共获取到 {len(obsidian_notes)} 条 Obsidian 笔记。")
+    
+    # 检查 Joplin 笔记
+    print("\n🔍 检查 Joplin 笔记中的重复头部...")
+    joplin_issues = 0
+    
+    for note in tqdm(joplin_notes, desc="检查 Joplin 笔记"):
+        joplin_ids = re.findall(r'<!-- notebridge_id: ([a-f0-9-]+) -->', note['body'])
+        yaml_ids = re.findall(r'notebridge_id: ([a-f0-9-]+)', note['body'])
+        
+        if len(joplin_ids) + len(yaml_ids) > 1:
+            joplin_issues += 1
+            print(f"  ⚠️ 发现重复头部: {note['title']}")
+    
+    # 检查 Obsidian 笔记
+    print("\n🔍 检查 Obsidian 笔记中的重复头部...")
+    obsidian_issues = 0
+    
+    for note in tqdm(obsidian_notes, desc="检查 Obsidian 笔记"):
+        try:
+            with open(note['path'], 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            joplin_ids = re.findall(r'<!-- notebridge_id: ([a-f0-9-]+) -->', content)
+            yaml_ids = re.findall(r'notebridge_id: ([a-f0-9-]+)', content)
+            
+            if len(joplin_ids) + len(yaml_ids) > 1:
+                obsidian_issues += 1
+                print(f"  ⚠️ 发现重复头部: {note['title']}")
+        except Exception as e:
+            print(f"  ❌ 检查失败: {note['title']} - {e}")
+    
+    # 总结
+    total_issues = joplin_issues + obsidian_issues
+    
+    print(f"\n📊 检查结果:")
+    print(f"  Joplin 笔记问题: {joplin_issues} 条")
+    print(f"  Obsidian 笔记问题: {obsidian_issues} 条")
+    print(f"  总计问题: {total_issues} 条")
+    
+    if total_issues > 0:
+        print(f"\n🔧 发现问题！建议运行以下命令修复:")
+        print(f"  python notebridge.py fix-duplicate-headers")
+    else:
+        print(f"\n✅ 没有发现重复头部问题！")
+        print(f"💡 建议定期运行此命令进行预防性检查")
+    
+    print(f"\n💡 预防建议:")
+    print(f"  - 定期运行此命令检查重复头部")
+    print(f"  - 在同步前运行此命令")
+    print(f"  - 如果发现问题，及时运行修复命令")
+
+def clean_all_joplin_imports():
+    """
+    删除所有来自Joplin的笔记（不管是否修改过）
+    """
+    print("🧹 删除所有来自Joplin的笔记...")
+    print("⚠️  这将删除所有带有 notebridge_source: joplin 标记的笔记！")
+    
+    # 获取笔记
+    print("正在获取Obsidian笔记...")
+    obsidian_notes = get_obsidian_notes()
+    print(f"获取到 {len(obsidian_notes)} 条 Obsidian 笔记")
+    
+    # 检测来自Joplin的笔记
+    joplin_imported_notes = []
+    other_notes = []
+    
+    for note in obsidian_notes:
+        sync_info = extract_sync_info_from_obsidian(note['body'])
+        
+        if sync_info.get('notebridge_source') == 'joplin':
+            joplin_imported_notes.append(note)
+        else:
+            other_notes.append(note)
+    
+    print(f"📊 检测结果：")
+    print(f"  来自Joplin的笔记: {len(joplin_imported_notes)} 条")
+    print(f"  其他笔记: {len(other_notes)} 条")
+    
+    if not joplin_imported_notes:
+        print("✅ 没有发现来自Joplin的笔记！")
+        return
+    
+    # 显示要删除的笔记统计
+    print(f"\n📋 将要删除的笔记统计：")
+    
+    # 按文件夹统计
+    folder_stats = {}
+    for note in joplin_imported_notes:
+        folder = note.get('folder', '根目录')
+        if folder not in folder_stats:
+            folder_stats[folder] = 0
+        folder_stats[folder] += 1
+    
+    print(f"  按文件夹分布：")
+    for folder, count in sorted(folder_stats.items()):
+        print(f"    {folder}: {count} 条")
+    
+    # 显示前10条要删除的笔记
+    print(f"\n📋 将要删除的笔记（前10条）：")
+    for i, note in enumerate(joplin_imported_notes[:10], 1):
+        print(f"  {i}. {note['title']} ({note.get('folder', '根目录')})")
+    
+    if len(joplin_imported_notes) > 10:
+        print(f"  ... 还有 {len(joplin_imported_notes) - 10} 条")
+    
+    # 确认删除
+    print(f"\n⚠️  ⚠️  ⚠️  危险操作警告 ⚠️  ⚠️  ⚠️")
+    print(f"确认删除所有 {len(joplin_imported_notes)} 条来自Joplin的笔记？")
+    print(f"这将永久删除选中的笔记，无法恢复！")
+    print(f"删除后，你的Obsidian中将只剩下 {len(other_notes)} 条其他笔记")
+    
+    confirm = input("\n输入 'DELETE ALL' 确认删除，其他任意键取消: ").strip()
+    
+    if confirm == 'DELETE ALL':
+        print(f"\n🧹 开始删除 {len(joplin_imported_notes)} 条来自Joplin的笔记...")
+        execute_bulk_delete(joplin_imported_notes)
+        
+        print(f"\n🎉 清理完成！")
+        print(f"现在你的Obsidian中还有 {len(other_notes)} 条其他笔记")
+        print(f"\n💡 建议：")
+        print(f"  现在可以运行 'python notebridge.py sync --force' 重新同步所有笔记")
+    else:
+        print("❌ 取消删除操作")
+
+def confirm_sync_with_duplicates(duplicates, matched_pairs, unmatched_joplin, unmatched_obsidian):
+    """
+    显示查重结果和同步计划，获取用户确认
+    """
+    print("\n" + "="*80)
+    print("🔍 同步前查重检测结果")
+    print("="*80)
+    
+    # 统计重复情况
+    total_duplicates = 0
+    for category, items in duplicates.items():
+        if items:
+            print(f"\n📊 {category}: {len(items)} 对重复")
+            total_duplicates += len(items)
+    
+    if total_duplicates == 0:
+        print("\n✅ 没有发现重复笔记！")
+    else:
+        print(f"\n⚠️  发现 {total_duplicates} 对重复笔记")
+        
+        # 显示重复类型
+        if duplicates.get('id_duplicates'):
+            print("🚨 发现基于同步ID的重复（最严重）")
+        if duplicates.get('sync_time_conflicts'):
+            print("⚠️  发现同步时间冲突")
+    
+    # 显示同步计划
+    print("\n" + "="*80)
+    print("📋 同步计划预览")
+    print("="*80)
+    
+    print_sync_plan_with_duplicates(matched_pairs, unmatched_joplin, unmatched_obsidian, duplicates)
+    
+    # 用户确认
+    print("\n" + "="*80)
+    print("❓ 请选择操作")
+    print("="*80)
+    
+    if total_duplicates > 0:
+        print("1. 继续同步（跳过重复笔记）")
+        print("2. 先清理重复笔记再同步")
+        print("3. 查看详细重复信息")
+        print("4. 取消同步")
+        
+        while True:
+            choice = input("\n请输入选择 (1-4): ").strip()
+            
+            if choice == "1":
+                return "continue_skip_duplicates"
+            elif choice == "2":
+                return "clean_duplicates_first"
+            elif choice == "3":
+                print_detailed_duplicate_info(duplicates)
+                print("\n请重新选择操作：")
+                continue
+            elif choice == "4":
+                return "cancel"
+            else:
+                print("❌ 无效选择，请输入 1-4")
+                continue
+    else:
+        print("1. 继续同步")
+        print("2. 取消同步")
+        
+        while True:
+            choice = input("\n请输入选择 (1-2): ").strip()
+            
+            if choice == "1":
+                return "continue"
+            elif choice == "2":
+                return "cancel"
+            else:
+                print("❌ 无效选择，请输入 1-2")
+                continue
+
+def print_sync_plan_with_duplicates(matched_pairs, unmatched_joplin, unmatched_obsidian, duplicates):
+    """
+    显示包含重复信息的同步计划
+    """
+    print(f"\n📝 已匹配笔记对: {len(matched_pairs)} 对")
+    
+    # 检查匹配的笔记对中是否有重复
+    duplicate_matched = 0
+    for pair in matched_pairs:
+        joplin_note = pair['joplin']
+        obsidian_note = pair['obsidian']
+        
+        # 检查是否在重复列表中
+        is_duplicate = False
+        for category, items in duplicates.items():
+            for item in items:
+                if (item.get('joplin', {}).get('id') == joplin_note['id'] and 
+                    item.get('obsidian', {}).get('path') == obsidian_note['path']):
+                    is_duplicate = True
+                    break
+            if is_duplicate:
+                break
+        
+        if is_duplicate:
+            duplicate_matched += 1
+            print(f"  ⚠️  {joplin_note['title']} <-> {obsidian_note['title']} (重复)")
+        else:
+            print(f"  ✅ {joplin_note['title']} <-> {obsidian_note['title']}")
+    
+    if duplicate_matched > 0:
+        print(f"  📊 其中 {duplicate_matched} 对存在重复问题")
+    
+    print(f"\n📄 未匹配的 Joplin 笔记: {len(unmatched_joplin)} 条")
+    
+    # 检查未匹配的Joplin笔记是否与Obsidian笔记重复
+    duplicate_unmatched_joplin = 0
+    for note in unmatched_joplin[:10]:  # 只显示前10条
+        is_duplicate = False
+        for category, items in duplicates.items():
+            for item in items:
+                if item.get('joplin', {}).get('id') == note['id']:
+                    is_duplicate = True
+                    break
+            if is_duplicate:
+                break
+        
+        if is_duplicate:
+            duplicate_unmatched_joplin += 1
+            print(f"  ⚠️  {note['title']} (与Obsidian笔记重复)")
+        else:
+            print(f"  ➕ {note['title']}")
+    
+    if len(unmatched_joplin) > 10:
+        print(f"  ... 还有 {len(unmatched_joplin) - 10} 条")
+    
+    if duplicate_unmatched_joplin > 0:
+        print(f"  📊 其中 {duplicate_unmatched_joplin} 条与Obsidian笔记重复")
+    
+    print(f"\n📝 未匹配的 Obsidian 笔记: {len(unmatched_obsidian)} 条")
+    
+    # 检查未匹配的Obsidian笔记是否与Joplin笔记重复
+    duplicate_unmatched_obsidian = 0
+    for note in unmatched_obsidian[:10]:  # 只显示前10条
+        is_duplicate = False
+        for category, items in duplicates.items():
+            for item in items:
+                if item.get('obsidian', {}).get('path') == note['path']:
+                    is_duplicate = True
+                    break
+            if is_duplicate:
+                break
+        
+        if is_duplicate:
+            duplicate_unmatched_obsidian += 1
+            print(f"  ⚠️  {note['title']} (与Joplin笔记重复)")
+        else:
+            print(f"  ➕ {note['title']}")
+    
+    if len(unmatched_obsidian) > 10:
+        print(f"  ... 还有 {len(unmatched_obsidian) - 10} 条")
+    
+    if duplicate_unmatched_obsidian > 0:
+        print(f"  📊 其中 {duplicate_unmatched_obsidian} 条与Joplin笔记重复")
+
+def print_detailed_duplicate_info(duplicates):
+    """
+    显示详细的重复信息
+    """
+    print("\n" + "="*80)
+    print("📋 详细重复信息")
+    print("="*80)
+    
+    for category, items in duplicates.items():
+        if not items:
+            continue
+            
+        print(f"\n🔍 {category}:")
+        for i, item in enumerate(items[:5], 1):  # 只显示前5个
+            joplin_note = item.get('joplin', {})
+            obsidian_note = item.get('obsidian', {})
+            
+            print(f"  {i}. Joplin: {joplin_note.get('title', 'N/A')}")
+            print(f"     Obsidian: {obsidian_note.get('title', 'N/A')}")
+            
+            if 'similarity' in item:
+                print(f"     相似度: {item['similarity']:.1%}")
+            if 'title_similarity' in item:
+                print(f"     标题相似度: {item['title_similarity']:.1%}")
+            if 'content_similarity' in item:
+                print(f"     内容相似度: {item['content_similarity']:.1%}")
+        
+        if len(items) > 5:
+            print(f"  ... 还有 {len(items) - 5} 个")
+
+def perform_sync_with_duplicate_handling(matched_pairs, unmatched_joplin, unmatched_obsidian, duplicates):
+    """
+    执行同步时处理重复笔记
+    """
+    sync_results = {
+        'success': [],
+        'failed': [],
+        'updated': [],
+        'created': [],
+        'deleted': [],
+        'skipped_duplicates': []  # 新增：跳过的重复笔记
+    }
+    
+    print("\n🚀 开始执行同步（跳过重复笔记）...")
+    print(f"📡 同步方向: {SYNC_DIRECTION}")
+    
+    # 创建重复笔记的集合，用于快速查找
+    duplicate_joplin_ids = set()
+    duplicate_obsidian_paths = set()
+    
+    for category, items in duplicates.items():
+        for item in items:
+            if 'joplin' in item:
+                duplicate_joplin_ids.add(item['joplin'].get('id'))
+            if 'obsidian' in item:
+                duplicate_obsidian_paths.add(item['obsidian'].get('path'))
+    
+    # 检测删除
+    current_joplin_notes = get_joplin_notes()
+    current_obsidian_notes = get_obsidian_notes()
+    deletions = detect_deletions(current_joplin_notes, current_obsidian_notes)
+    
+    # 显示删除预览并确认
+    if print_deletion_preview(deletions):
+        if confirm_deletions():
+            deletion_results = perform_deletion_sync(deletions)
+            sync_results['deleted'].extend(deletion_results['success'])
+            sync_results['failed'].extend(deletion_results['failed'])
+        else:
+            print("❌ 用户取消删除同步")
+    
+    # 1. 更新已匹配的笔记对（跳过重复的）
+    if matched_pairs and SYNC_DIRECTION in ['bidirectional', 'joplin_to_obsidian', 'obsidian_to_joplin']:
+        print(f"\n📝 更新 {len(matched_pairs)} 对已匹配笔记...")
+        skipped_count = 0
+        sync_rule_skipped_count = 0
+        
+        for pair in tqdm(matched_pairs, desc="更新匹配笔记"):
+            joplin_note = pair['joplin']
+            obsidian_note = pair['obsidian']
+            
+            # 检查是否为重复笔记
+            if (joplin_note['id'] in duplicate_joplin_ids or 
+                obsidian_note['path'] in duplicate_obsidian_paths):
+                sync_results['skipped_duplicates'].append(f"跳过重复: {joplin_note['title']} <-> {obsidian_note['title']}")
+                skipped_count += 1
+                continue
+            
+            # 检查同步规则
+            joplin_notebook = joplin_note['notebook']
+            obsidian_folder = obsidian_note['folder']
+            
+            # 检查是否允许 Joplin → Obsidian 同步
+            can_joplin_to_obsidian = (
+                SYNC_DIRECTION in ['bidirectional', 'joplin_to_obsidian'] and
+                not any(matches_pattern(joplin_notebook, pattern) for pattern in sync_rules['obsidian_to_joplin_only'])
+            )
+            
+            # 检查是否允许 Obsidian → Joplin 同步
+            can_obsidian_to_joplin = (
+                SYNC_DIRECTION in ['bidirectional', 'obsidian_to_joplin'] and
+                not any(matches_pattern(obsidian_folder, pattern) for pattern in sync_rules['joplin_to_obsidian_only'])
+            )
+            
+            # 如果两个方向都不允许，跳过这个笔记对
+            if not can_joplin_to_obsidian and not can_obsidian_to_joplin:
+                sync_results['skipped_duplicates'].append(f"跳过单向同步限制: {joplin_note['title']} <-> {obsidian_note['title']}")
+                sync_rule_skipped_count += 1
+                continue
+            
+            # 正常同步逻辑
+            joplin_content = joplin_note['body']
+            obsidian_content = obsidian_note['body']
+            
+            joplin_sync_info = extract_sync_info_from_joplin(joplin_content)
+            obsidian_sync_info = extract_sync_info_from_obsidian(obsidian_content)
+            
+            joplin_time = joplin_sync_info.get('notebridge_sync_time', '')
+            obsidian_time = obsidian_sync_info.get('notebridge_sync_time', '')
+            
+            if joplin_time > obsidian_time and can_joplin_to_obsidian:
+                success, result = update_obsidian_note(obsidian_note['path'], joplin_content)
+                if success:
+                    sync_results['updated'].append(f"Joplin → Obsidian: {joplin_note['title']}")
+                else:
+                    sync_results['failed'].append(f"Joplin → Obsidian: {joplin_note['title']} - {result}")
+            elif obsidian_time > joplin_time and can_obsidian_to_joplin:
+                success, result = update_joplin_note(joplin_note['id'], obsidian_content)
+                if success:
+                    sync_results['updated'].append(f"Obsidian → Joplin: {obsidian_note['title']}")
+                else:
+                    sync_results['failed'].append(f"Obsidian → Joplin: {obsidian_note['title']} - {result}")
+        
+        if skipped_count > 0:
+            print(f"  ⏭️  跳过了 {skipped_count} 对重复笔记")
+        if sync_rule_skipped_count > 0:
+            print(f"  ⏭️  跳过了 {sync_rule_skipped_count} 对单向同步限制笔记")
+    
+    # 2. 同步新笔记到 Obsidian（跳过重复的）
+    if unmatched_joplin and SYNC_DIRECTION in ['bidirectional', 'joplin_to_obsidian']:
+        print(f"\n📝 同步 {len(unmatched_joplin)} 条新笔记到 Obsidian...")
+        skipped_count = 0
+        sync_rule_skipped_count = 0
+        
+        for note in tqdm(unmatched_joplin, desc="Joplin → Obsidian"):
+            if note['id'] in duplicate_joplin_ids:
+                sync_results['skipped_duplicates'].append(f"跳过重复: Joplin {note['title']}")
+                skipped_count += 1
+                continue
+            
+            # 检查同步规则
+            notebook_path = note.get('notebook', '未分类')
+            
+            # 检查是否允许 Joplin → Obsidian 同步
+            if any(matches_pattern(notebook_path, pattern) for pattern in sync_rules['obsidian_to_joplin_only']):
+                sync_results['skipped_duplicates'].append(f"跳过单向同步限制: Joplin {note['title']} ({notebook_path})")
+                sync_rule_skipped_count += 1
+                continue
+            
+            success, result = sync_joplin_to_obsidian(note, notebook_path)
+            if success:
+                sync_results['created'].append(f"Joplin → Obsidian: {note['title']} ({notebook_path})")
+            else:
+                sync_results['failed'].append(f"Joplin → Obsidian: {note['title']} ({notebook_path}) - {result}")
+        
+        if skipped_count > 0:
+            print(f"  ⏭️  跳过了 {skipped_count} 条重复笔记")
+        if sync_rule_skipped_count > 0:
+            print(f"  ⏭️  跳过了 {sync_rule_skipped_count} 条单向同步限制笔记")
+    
+    # 3. 同步新笔记到 Joplin（跳过重复的）
+    if unmatched_obsidian and SYNC_DIRECTION in ['bidirectional', 'obsidian_to_joplin']:
+        print(f"\n📄 同步 {len(unmatched_obsidian)} 条新笔记到 Joplin...")
+        skipped_count = 0
+        sync_rule_skipped_count = 0
+        
+        # 按文件夹分组
+        notes_by_folder = {}
+        for note in unmatched_obsidian:
+            if note['path'] in duplicate_obsidian_paths:
+                sync_results['skipped_duplicates'].append(f"跳过重复: Obsidian {note['title']}")
+                skipped_count += 1
+                continue
+            
+            # 检查同步规则
+            folder_path = note.get('folder', '根目录')
+            
+            # 检查是否允许 Obsidian → Joplin 同步
+            if any(matches_pattern(folder_path, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
+                sync_results['skipped_duplicates'].append(f"跳过单向同步限制: Obsidian {note['title']} ({folder_path})")
+                sync_rule_skipped_count += 1
+                continue
+            
+            if folder_path not in notes_by_folder:
+                notes_by_folder[folder_path] = []
+            notes_by_folder[folder_path].append(note)
+        
+        print(f"  共需要处理 {len(notes_by_folder)} 个文件夹")
+        
+        for folder_path, notes in tqdm(notes_by_folder.items(), desc="处理文件夹"):
+            print(f"    正在处理文件夹: {folder_path} ({len(notes)} 条笔记)")
+            
+            notebook_id, error = get_or_create_joplin_notebook(folder_path)
+            if error:
+                print(f"    ❌ 创建笔记本失败: {error}")
+                for note in notes:
+                    sync_results['failed'].append(f"Obsidian → Joplin: {note['title']} ({folder_path}) - {error}")
+                continue
+            
+            print(f"    ✅ 笔记本准备就绪，开始创建笔记...")
+            
+            for note in notes:
+                success, result = sync_obsidian_to_joplin_with_notebook_id(note, notebook_id)
+                if success:
+                    sync_results['created'].append(f"Obsidian → Joplin: {note['title']} ({folder_path})")
+                else:
+                    sync_results['failed'].append(f"Obsidian → Joplin: {note['title']} ({folder_path}) - {result}")
+        
+        if skipped_count > 0:
+            print(f"  ⏭️  跳过了 {skipped_count} 条重复笔记")
+        if sync_rule_skipped_count > 0:
+            print(f"  ⏭️  跳过了 {sync_rule_skipped_count} 条单向同步限制笔记")
+    
+    # 保存当前同步状态
+    save_sync_state(current_joplin_notes, current_obsidian_notes)
+    
+    return sync_results
+
+def print_sync_results_with_duplicates(sync_results):
+    """
+    打印包含重复处理结果的同步报告
+    """
+    print("\n" + "="*50)
+    print("📊 同步结果报告（含重复处理）")
+    print("="*50)
+    
+    print(f"\n✅ 成功创建: {len(sync_results['created'])} 条")
+    for item in sync_results['created'][:10]:
+        print(f"  ✓ {item}")
+    if len(sync_results['created']) > 10:
+        print(f"  ... 还有 {len(sync_results['created']) - 10} 条")
+    
+    print(f"\n🔄 成功更新: {len(sync_results['updated'])} 条")
+    for item in sync_results['updated'][:10]:
+        print(f"  ✓ {item}")
+    if len(sync_results['updated']) > 10:
+        print(f"  ... 还有 {len(sync_results['updated']) - 10} 条")
+    
+    print(f"\n🗑️  成功删除: {len(sync_results['deleted'])} 条")
+    for item in sync_results['deleted'][:10]:
+        print(f"  ✓ {item}")
+    if len(sync_results['deleted']) > 10:
+        print(f"  ... 还有 {len(sync_results['deleted']) - 10} 条")
+    
+    print(f"\n⏭️  跳过重复: {len(sync_results['skipped_duplicates'])} 条")
+    for item in sync_results['skipped_duplicates'][:10]:
+        print(f"  ⏭️  {item}")
+    if len(sync_results['skipped_duplicates']) > 10:
+        print(f"  ... 还有 {len(sync_results['skipped_duplicates']) - 10} 条")
+    
+    print(f"\n❌ 失败: {len(sync_results['failed'])} 条")
+    for item in sync_results['failed'][:10]:
+        print(f"  ✗ {item}")
+    if len(sync_results['failed']) > 10:
+        print(f"  ... 还有 {len(sync_results['failed']) - 10} 条")
+    
+    # 统计总结
+    total_processed = (len(sync_results['created']) + len(sync_results['updated']) + 
+                      len(sync_results['deleted']) + len(sync_results['skipped_duplicates']))
+    total_operations = total_processed + len(sync_results['failed'])
+    
+    print(f"\n📈 总结:")
+    print(f"  总操作数: {total_operations}")
+    print(f"  成功处理: {total_processed}")
+    print(f"  失败: {len(sync_results['failed'])}")
+    print(f"  成功率: {total_processed/total_operations*100:.1f}%" if total_operations > 0 else "成功率: 0%")
+    
+    if sync_results['skipped_duplicates']:
+        print(f"\n💡 提示: 有 {len(sync_results['skipped_duplicates'])} 条重复笔记被跳过")
+        print("   如需处理重复笔记，请运行: python notebridge.py interactive-clean")
+
 if __name__ == "__main__":
     # 检查命令行参数
     if len(sys.argv) > 1:
@@ -2501,8 +4486,8 @@ if __name__ == "__main__":
             force_sync = "--force" in sys.argv
             
             if not force_sync:
-                # 预览模式
-                print("\n🔄 启动智能同步模式...")
+                # 智能预览模式（集成查重检测）
+                print("\n🔄 启动智能同步模式（含查重检测）...")
                 
                 # 获取笔记
                 print("正在获取 Joplin 笔记...")
@@ -2525,17 +4510,31 @@ if __name__ == "__main__":
                     id_mapping, joplin_to_sync, obsidian_to_sync
                 )
                 
-                # 打印同步计划
-                print_sync_plan(matched_pairs, unmatched_joplin, unmatched_obsidian)
+                # 运行查重检测
+                print("正在运行查重检测...")
+                duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
                 
-                print("\n💡 这是预览模式。要执行实际同步，请运行:")
-                print("  python notebridge.py sync --force                    # 双向同步")
-                print("  python notebridge.py sync --force --joplin-to-obsidian  # 仅 Joplin → Obsidian")
-                print("  python notebridge.py sync --force --obsidian-to-joplin  # 仅 Obsidian → Joplin")
+                # 显示查重结果和同步计划，获取用户确认
+                user_choice = confirm_sync_with_duplicates(
+                    duplicates, matched_pairs, unmatched_joplin, unmatched_obsidian
+                )
+                
+                if user_choice == "cancel":
+                    print("❌ 用户取消同步")
+                elif user_choice == "clean_duplicates_first":
+                    print("\n🧹 启动重复清理模式...")
+                    interactive_clean_duplicates()
+                    print("\n💡 重复清理完成。如需同步，请重新运行:")
+                    print("  python notebridge.py sync --force")
+                elif user_choice in ["continue", "continue_skip_duplicates"]:
+                    print("\n💡 要执行实际同步，请运行:")
+                    print("  python notebridge.py sync --force                    # 双向同步")
+                    print("  python notebridge.py sync --force --joplin-to-obsidian  # 仅 Joplin → Obsidian")
+                    print("  python notebridge.py sync --force --obsidian-to-joplin  # 仅 Obsidian → Joplin")
                 
             else:
-                # 执行实际同步
-                print("\n🔄 启动智能同步模式...")
+                # 执行实际同步（含查重检测和人工确认）
+                print("\n🔄 启动智能同步模式（含查重检测）...")
                 
                 # 获取笔记
                 print("正在获取 Joplin 笔记...")
@@ -2558,11 +4557,32 @@ if __name__ == "__main__":
                     id_mapping, joplin_to_sync, obsidian_to_sync
                 )
                 
-                # 执行同步
-                sync_results = perform_sync_with_skip(matched_pairs, unmatched_joplin, unmatched_obsidian)
+                # 运行查重检测
+                print("正在运行查重检测...")
+                duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
                 
-                # 打印结果
-                print_sync_results_with_skip(sync_results)
+                # 显示查重结果和同步计划，获取用户确认
+                user_choice = confirm_sync_with_duplicates(
+                    duplicates, matched_pairs, unmatched_joplin, unmatched_obsidian
+                )
+                
+                if user_choice == "cancel":
+                    print("❌ 用户取消同步")
+                    sys.exit(0)
+                elif user_choice == "clean_duplicates_first":
+                    print("\n🧹 启动重复清理模式...")
+                    interactive_clean_duplicates()
+                    print("\n💡 重复清理完成。如需同步，请重新运行:")
+                    print("  python notebridge.py sync --force")
+                    sys.exit(0)
+                elif user_choice in ["continue", "continue_skip_duplicates"]:
+                    # 执行同步
+                    sync_results = perform_sync_with_duplicate_handling(
+                        matched_pairs, unmatched_joplin, unmatched_obsidian, duplicates
+                    )
+                    
+                    # 打印结果
+                    print_sync_results_with_duplicates(sync_results)
             
         elif command == "check-duplicates":
             # 查重模式
@@ -2578,7 +4598,7 @@ if __name__ == "__main__":
             print(f"共获取到 {len(obsidian_notes)} 条 Obsidian 笔记。\n")
             
             # 使用优化版查重
-            duplicates = find_duplicates_optimized(joplin_notes, obsidian_notes)
+            duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
             
             # 打印查重报告
             print_duplicate_report(duplicates)
@@ -2594,21 +4614,67 @@ if __name__ == "__main__":
         elif command == "fix-attachments":
             fix_obsidian_attachments()
             sys.exit(0)
+            
+        elif command == "test-duplicates":
+            # 快速重复检测测试
+            quick_duplicate_test()
+            sys.exit(0)
+            
+        elif command == "quick-title-check":
+            # 快速标题相似度检测
+            quick_title_similarity_check()
+            sys.exit(0)
+            
+        elif command == "clean-joplin-imports":
+            # 清理Obsidian中来自Joplin的笔记
+            interactive_clean_joplin_imported_notes()
+            sys.exit(0)
+            
+        elif command == "debug-sync":
+            # 调试同步信息提取
+            debug_sync_info_extraction()
+            sys.exit(0)
+            
+        elif command == "clean-unmodified":
+            # 清理未修改的Joplin导入笔记
+            clean_unmodified_joplin_imports()
+            sys.exit(0)
+            
+        elif command == "clean-all-joplin":
+            # 删除所有来自Joplin的笔记
+            clean_all_joplin_imports()
+            sys.exit(0)
+            
+        elif command == "fix-duplicate-headers":
+            # 修复重复的同步信息头部
+            fix_duplicate_sync_headers()
+            sys.exit(0)
+            
+        elif command == "prevent-duplicate-headers":
+            # 预防性检查重复头部
+            prevent_duplicate_headers()
+            sys.exit(0)
         
         else:
             print(f"❌ 未知命令: {command}")
             print("\n📖 使用方法:")
-            print("  python notebridge.py sync         # 智能同步预览")
-            print("  python notebridge.py sync --force # 执行实际同步")
+            print("  python notebridge.py sync         # 智能同步预览（含查重检测）")
+            print("  python notebridge.py sync --force # 执行实际同步（含查重确认）")
             print("  python notebridge.py sync --force --joplin-to-obsidian  # 仅 Joplin → Obsidian")
             print("  python notebridge.py sync --force --obsidian-to-joplin  # 仅 Obsidian → Joplin")
-            print("  python notebridge.py check-duplicates # 查重模式（优化版）")
+            print("  python notebridge.py check-duplicates # 查重模式（超快速版）")
+            print("  python notebridge.py quick-title-check # 快速标题相似度检测（推荐）")
+            print("  python notebridge.py clean-joplin-imports # 清理Obsidian中来自Joplin的笔记")
+            print("  python notebridge.py clean-unmodified    # 清理未修改的Joplin导入笔记")
+            print("  python notebridge.py clean-all-joplin    # 删除所有来自Joplin的笔记（彻底清理）")
+            print("  python notebridge.py fix-duplicate-headers # 修复重复的同步信息头部")
+            print("  python notebridge.py test-duplicates  # 性能测试对比")
             print("  python notebridge.py interactive-clean # 交互式清理重复笔记")
             print("  python notebridge.py clean-duplicates # 自动清理重复笔记和同步ID")
             print("  python notebridge.py fix-attachments # 补全 Obsidian 附件")
     else:
-        # 同步预览模式
-        print("\n🔄 启动智能同步模式...")
+        # 智能同步预览模式（集成查重检测）
+        print("\n🔄 启动智能同步模式（含查重检测）...")
         
         # 获取笔记
         print("正在获取 Joplin 笔记...")
@@ -2631,10 +4697,24 @@ if __name__ == "__main__":
             id_mapping, joplin_to_sync, obsidian_to_sync
         )
         
-        # 打印同步计划
-        print_sync_plan(matched_pairs, unmatched_joplin, unmatched_obsidian)
+        # 运行查重检测
+        print("正在运行查重检测...")
+        duplicates = find_duplicates_ultra_fast(joplin_notes, obsidian_notes)
         
-        print("\n💡 这是预览模式。要执行实际同步，请运行:")
-        print("  python notebridge.py sync --force                    # 双向同步")
-        print("  python notebridge.py sync --force --joplin-to-obsidian  # 仅 Joplin → Obsidian")
-        print("  python notebridge.py sync --force --obsidian-to-joplin  # 仅 Obsidian → Joplin")
+        # 显示查重结果和同步计划，获取用户确认
+        user_choice = confirm_sync_with_duplicates(
+            duplicates, matched_pairs, unmatched_joplin, unmatched_obsidian
+        )
+        
+        if user_choice == "cancel":
+            print("❌ 用户取消同步")
+        elif user_choice == "clean_duplicates_first":
+            print("\n🧹 启动重复清理模式...")
+            interactive_clean_duplicates()
+            print("\n💡 重复清理完成。如需同步，请重新运行:")
+            print("  python notebridge.py sync --force")
+        elif user_choice in ["continue", "continue_skip_duplicates"]:
+            print("\n💡 要执行实际同步，请运行:")
+            print("  python notebridge.py sync --force                    # 双向同步")
+            print("  python notebridge.py sync --force --joplin-to-obsidian  # 仅 Joplin → Obsidian")
+            print("  python notebridge.py sync --force --obsidian-to-joplin  # 仅 Obsidian → Joplin")
