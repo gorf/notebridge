@@ -78,6 +78,13 @@ python notebridge.py sync --force --joplin-to-obsidian
 
 # 仅从 Obsidian 同步到 Joplin
 python notebridge.py sync --force --obsidian-to-joplin
+
+# 手工确认模式同步（推荐，防止重复头部问题）
+python notebridge.py sync-manual
+
+# 手工确认单向同步
+python notebridge.py sync-manual --joplin-to-obsidian
+python notebridge.py sync-manual --obsidian-to-joplin
 ```
 
 ### 其他功能命令
@@ -105,11 +112,26 @@ python notebridge.py clean-duplicates
 python notebridge.py fix-attachments
 ```
 
-### 同步方向说明
+### 同步模式说明
 
+#### 自动同步模式
 - **双向同步**（默认）：Joplin 和 Obsidian 之间相互同步
 - **Joplin → Obsidian**：只从 Joplin 同步到 Obsidian，适合首次导入
 - **Obsidian → Joplin**：只从 Obsidian 同步到 Joplin，适合备份
+
+#### 手工确认模式（推荐）
+**为什么推荐手工确认模式？**
+- ✅ **防止重复头部问题**：每次同步前自动检查并修复重复的同步信息头部
+- ✅ **防止反向同步**：自动检测笔记来源，避免将笔记反向同步回原处（如 Obsidian → Joplin → Obsidian）
+- ✅ **完全可控**：每条笔记同步前都会显示详情，由您决定是否同步
+- ✅ **安全可靠**：可以随时查看笔记内容、同步状态、是否有重复头部、笔记来源等信息
+- ✅ **灵活操作**：支持跳过单条、跳过所有、退出等操作
+
+**使用场景：**
+- 首次同步时，建议使用手工确认模式
+- 解决重复头部问题后的第一次同步
+- 不确定哪些笔记需要同步时
+- 需要仔细检查每条笔记时
 
 ### 选择性同步配置
 
@@ -229,17 +251,77 @@ python notebridge.py clean-duplicates
 
 ## 最新更新
 
+### v1.3.0 - 添加手工确认模式，彻底解决重复头部和反向同步问题
+- ✅ **新增手工确认同步模式**：每条笔记同步前都需要人工确认，完全可控
+- ✅ **修复手工确认模式的同步规则检查**：手工确认模式现在也会严格遵守配置的同步规则
+  - 已匹配的笔记对：检查是否允许指定方向的同步
+  - 新笔记：检查笔记本/文件夹是否允许同步
+  - 自动跳过不符合规则的笔记，并显示原因
+- ✅ **智能防止反向同步**：自动检测笔记来源，避免将未修改的笔记反向同步回原处
+  - 笔记来自 Obsidian → Joplin 后，如果在 Joplin 端未修改，不会同步回 Obsidian
+  - 笔记来自 Joplin → Obsidian 后，如果在 Obsidian 端未修改，不会同步回 Joplin
+  - 只有真正修改过的笔记才会同步，通过时间戳智能判断
+- ✅ **修复同步信息格式问题**：
+  - Joplin 使用 HTML 注释格式：`<!-- notebridge_id: xxx -->`
+  - Obsidian 使用 YAML frontmatter 格式：在笔记属性中
+  - 同步时自动转换格式，不再混合使用
+- ✅ **双端回写同步信息**：同步成功后，两端都会有正确格式的同步信息
+  - Joplin → Obsidian 后，Joplin 端也会添加同步信息（HTML注释）
+  - Obsidian → Joplin 后，Obsidian 端也会添加同步信息（YAML格式）
+  - 强制回写，确保不会重复同步
+- ✅ **增强图片链接处理**：支持HTML和Markdown两种格式的图片
+  - 支持 `<img src=":/资源ID"/>` 格式（HTML）
+  - 支持 `![](:/资源ID)` 格式（Markdown）
+  - 自动下载资源并转换为Obsidian本地路径
+  - 保留原始尺寸信息（作为注释）
+- ✅ **修复同步信息字段缺失问题**：
+  - 确保提取的同步信息包含所有必需字段
+  - 缺失的字段使用默认值（`notebridge_version` 默认为 `'1'`）
+  - 避免同步时出现 `'notebridge_version'` 等字段缺失错误
+- ✅ **自动跳过空笔记和无效笔记**：
+  - 自动跳过空标题的笔记（可能已删除）
+  - 自动跳过空内容的笔记
+  - 避免同步无效或已删除的笔记
+- ✅ **自动检测和修复重复头部**：同步过程中自动检查并修复重复的同步信息头部
+- ✅ **增强同步信息清理逻辑**：彻底清理HTML注释和YAML格式的混合重复信息
+- ✅ **添加预防性检查命令**：`prevent-duplicate-headers` 用于定期检查重复头部
+- ✅ **修复时间戳问题**：避免生成未来时间戳
+
 ### v1.2.0 - 修复单向同步规则过滤问题
 - ✅ **修复单向同步规则未生效的问题**：现在程序会正确检查每个笔记的同步规则，确保只同步允许方向的笔记
 - ✅ **增强同步规则检查**：在同步执行时对每个笔记进行同步规则验证
 - ✅ **改进同步报告**：新增单向同步限制跳过的统计信息
 - ✅ **添加测试脚本**：`test_sync_rules.py` 用于验证同步规则逻辑
 
-### 修复详情
-- 在 `perform_sync_with_duplicate_handling` 函数中添加了同步规则检查
-- 对于已匹配的笔记对，检查是否允许双向同步
-- 对于新笔记，检查是否允许指定方向的同步
-- 跳过不符合同步规则的笔记，并在报告中显示统计信息
+### 反向同步问题解决方案（智能判断，无需手工）
+
+**什么是反向同步问题？**
+- 笔记从 Obsidian 同步到 Joplin 后，如果在 Joplin 端未修改，不应该再同步回 Obsidian
+- 笔记从 Joplin 同步到 Obsidian 后，如果在 Obsidian 端未修改，不应该再同步回 Joplin
+
+**智能判断逻辑（自动，无需手工）：**
+1. 检测笔记来源（`notebridge_source` 字段）
+2. 比较两端的同步时间戳
+3. **如果时间戳相同** → 说明未修改 → 自动跳过
+4. **如果时间戳不同** → 说明有修改 → 允许同步
+
+**应用场景：**
+- ✅ 场景1：笔记来自 Obsidian，在 Joplin 未修改 → **自动跳过**
+- ✅ 场景2：笔记来自 Obsidian，在 Joplin 有修改 → **允许同步**
+- ✅ 场景3：笔记来自 Joplin，在 Obsidian 未修改 → **自动跳过**
+- ✅ 场景4：笔记来自 Joplin，在 Obsidian 有修改 → **允许同步**
+
+### 重复头部问题解决方案
+1. **立即修复**：运行 `python notebridge.py fix-duplicate-headers` 修复现有的重复头部
+2. **预防措施**：
+   - 使用手工确认模式同步：`python notebridge.py sync-manual`
+   - 每次同步前自动检查并修复重复头部
+   - 定期运行预防性检查：`python notebridge.py prevent-duplicate-headers`
+3. **根本解决**：
+   - 改进了同步信息添加逻辑，彻底清理旧的同步信息
+   - 在 `update_obsidian_note` 函数中添加了重复头部检查
+   - 修复了时间戳生成逻辑
+   - **新增反向同步智能检测**：自动跳过未修改的反向同步
 
 ## 进阶用法与开发计划
 
