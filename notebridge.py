@@ -358,6 +358,9 @@ def get_obsidian_notes():
             folder = os.path.dirname(rel_path)
             if folder == '.':
                 folder = '根目录'
+            else:
+                # 统一转换为正斜杠格式，确保在Joplin中创建多级笔记本
+                folder = folder.replace('\\', '/')
             
             # 检查是否匹配 skip_sync 模式
             should_skip = False
@@ -371,6 +374,68 @@ def get_obsidian_notes():
                 continue  # 跳过这个文件
             
             title = Path(file_path).stem  # 文件名作为标题
+            
+            # 自动修复超长标题（超过100字符）
+            if len(title) > 100:
+                original_title = title
+                # 生成简短标题
+                new_title = title[:50].strip('。，！？、 ')
+                
+                print(f"  ⚠️  发现超长标题，正在自动修复...")
+                print(f"     原标题: {original_title[:60]}...")
+                print(f"     新标题: {new_title}")
+                
+                try:
+                    # 将原标题添加到内容开头
+                    # 检查是否已有YAML frontmatter
+                    import re
+                    yaml_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+                    if yaml_match:
+                        frontmatter = yaml_match.group(0)
+                        remaining_content = content[yaml_match.end():]
+                    else:
+                        frontmatter = ''
+                        remaining_content = content
+                    
+                    # 检查内容开头是否已有这个标题
+                    remaining_content = remaining_content.strip()
+                    if not remaining_content.startswith(f"# {original_title}"):
+                        # 添加原标题作为一级标题
+                        new_content = f"{frontmatter}# {original_title}\n\n{remaining_content}"
+                    else:
+                        new_content = content
+                    
+                    # 生成新文件名
+                    directory = os.path.dirname(file_path)
+                    new_filename = f"{new_title}.md"
+                    new_path = os.path.join(directory, new_filename)
+                    
+                    # 如果新文件已存在，添加数字后缀
+                    counter = 1
+                    while os.path.exists(new_path) and new_path != file_path:
+                        new_filename = f"{new_title}_{counter}.md"
+                        new_path = os.path.join(directory, new_filename)
+                        counter += 1
+                    
+                    # 写入新文件
+                    with open(new_path, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    
+                    # 删除旧文件（如果不是同一个文件）
+                    if new_path != file_path:
+                        os.remove(file_path)
+                        print(f"     ✅ 已重命名: {os.path.basename(file_path)} → {new_filename}")
+                        file_path = new_path  # 更新路径
+                    else:
+                        print(f"     ✅ 已更新内容")
+                    
+                    title = new_title
+                    content = new_content
+                    
+                except Exception as e:
+                    print(f"     ⚠️  自动修复失败: {e}，使用原标题")
+                    # 修复失败，使用原标题（会被后续的标题长度限制截断）
+            
             notes.append({
                 'path': file_path, 
                 'title': title, 
