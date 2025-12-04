@@ -85,15 +85,35 @@ def clean_duplicate_sync_info(content):
         return content  # 没有重复，直接返回
     
     # 找到最新的同步信息
+    # 优先选择有同步时间的，如果都没有同步时间，则选择第一个ID
     latest_time = ''
     latest_id = ''
-    for i, sync_time in enumerate(all_times):
-        if sync_time > latest_time:
+    latest_source = ''
+    latest_version = '1'
+    
+    # 提取所有source和version信息
+    all_sources = re.findall(r'<!-- notebridge_source: ([^>]+) -->', content)
+    all_sources += re.findall(r'notebridge_source: \'?([^\'\n]+)\'?', content)
+    all_versions = re.findall(r'<!-- notebridge_version: ([^>]+) -->', content)
+    all_versions += re.findall(r'notebridge_version: \'?([^\'\n]+)\'?', content)
+    
+    # 找到有效的同步时间最新的那个
+    for i in range(len(all_ids)):
+        sync_time = all_times[i] if i < len(all_times) else ''
+        if sync_time and sync_time.strip() and sync_time > latest_time:
             latest_time = sync_time
             latest_id = all_ids[i]
+            latest_source = all_sources[i] if i < len(all_sources) else ''
+            latest_version = all_versions[i] if i < len(all_versions) else '1'
+    
+    # 如果所有时间都是空的，选择第一个有效ID
+    if not latest_id:
+        latest_id = all_ids[0] if all_ids else ''
+        latest_source = all_sources[0] if all_sources else ''
+        latest_version = all_versions[0] if all_versions else '1'
     
     if not latest_id:
-        return content  # 没有有效的时间信息，直接返回
+        return content  # 没有有效的ID，直接返回
     
     # 清理所有旧的同步信息
     # 清理HTML注释中的同步信息（更彻底）
@@ -117,15 +137,25 @@ def clean_duplicate_sync_info(content):
     
     if has_yaml:
         # Obsidian格式，添加到YAML中
-        latest_sync_info = generate_sync_info('obsidian')
+        latest_sync_info = generate_sync_info(latest_source if latest_source else 'obsidian')
         latest_sync_info['notebridge_id'] = latest_id
-        latest_sync_info['notebridge_sync_time'] = latest_time
+        if latest_time and latest_time.strip():
+            latest_sync_info['notebridge_sync_time'] = latest_time
+        if latest_source and latest_source.strip():
+            latest_sync_info['notebridge_source'] = latest_source
+        if latest_version:
+            latest_sync_info['notebridge_version'] = latest_version
         content = add_sync_info_to_obsidian_content(content, latest_sync_info)
     else:
         # Joplin格式，添加到HTML注释中
-        latest_sync_info = generate_sync_info('joplin')
+        latest_sync_info = generate_sync_info(latest_source if latest_source else 'joplin')
         latest_sync_info['notebridge_id'] = latest_id
-        latest_sync_info['notebridge_sync_time'] = latest_time
+        if latest_time and latest_time.strip():
+            latest_sync_info['notebridge_sync_time'] = latest_time
+        if latest_source and latest_source.strip():
+            latest_sync_info['notebridge_source'] = latest_source
+        if latest_version:
+            latest_sync_info['notebridge_version'] = latest_version
         content = add_sync_info_to_joplin_content(content, latest_sync_info)
     
     return content
@@ -1020,24 +1050,35 @@ def smart_match_notes(id_mapping, joplin_notes, obsidian_notes):
                         
                         # 如果来源是obsidian，说明原本是从Obsidian同步过来的，现在Obsidian端没有了
                         if source == 'obsidian':
-                            if should_treat_as_deletion(joplin_note, joplin_sync_info, is_joplin_note=True):
-                                print(f"  ⚠️ 检测到可能已删除的笔记（Obsidian 端可能已删除）: {joplin_note.get('title', 'Unknown')} (ID: {notebridge_id[:8]}...)")
-                                deleted_candidates.append({
-                                    'type': 'obsidian_deleted',
-                                    'note': joplin_note,
-                                    'notebridge_id': notebridge_id,
-                                    'title': joplin_note.get('title', 'Unknown')
-                                })
+                            # 需要区分两种情况：
+                            # 1. 从未同步过（没有 notebridge_sync_time）→ 应该作为新笔记同步
+                            # 2. 之前已同步过（有 notebridge_sync_time）→ 需要判断是删除还是重新同步
+                            sync_time = joplin_sync_info.get('notebridge_sync_time', '')
+                            if sync_time:
+                                # 有同步记录，说明之前已经同步过，现在 Obsidian 端没有了
+                                # 使用 should_treat_as_deletion 判断是删除还是重新同步
+                                if should_treat_as_deletion(joplin_note, joplin_sync_info, is_joplin_note=True):
+                                    print(f"  ⚠️ 检测到可能已删除的笔记（Obsidian 端可能已删除）: {joplin_note.get('title', 'Unknown')} (ID: {notebridge_id[:8]}...)")
+                                    deleted_candidates.append({
+                                        'type': 'obsidian_deleted',
+                                        'note': joplin_note,
+                                        'notebridge_id': notebridge_id,
+                                        'title': joplin_note.get('title', 'Unknown')
+                                    })
+                                else:
+                                    # 获取时间信息用于调试
+                                    edit_time = joplin_note.get('user_updated_time', 0)
+                                    sync_timestamp = parse_sync_time_to_timestamp(joplin_sync_info.get('notebridge_sync_time', ''))
+                                    edit_time_str = format_timestamp_for_debug(edit_time)
+                                    sync_time_str = format_timestamp_for_debug(sync_timestamp)
+                                    delta_ms = edit_time - sync_timestamp
+                                    delta_str = f"{delta_ms / 1000:.1f}秒" if delta_ms > 0 else f"{abs(delta_ms) / 1000:.1f}秒（早于）"
+                                    print(f"  🔁 检测到 Joplin 笔记在同步后有修改，将重新同步到 Obsidian: {joplin_note.get('title', 'Unknown')} (ID: {notebridge_id[:8]}...)")
+                                    print(f"     编辑时间: {edit_time_str}, 同步时间: {sync_time_str}, 时间差: {delta_str}")
+                                    unmatched_joplin_ids.add(joplin_note['id'])
                             else:
-                                # 获取时间信息用于调试
-                                edit_time = joplin_note.get('user_updated_time', 0)
-                                sync_timestamp = parse_sync_time_to_timestamp(joplin_sync_info.get('notebridge_sync_time', ''))
-                                edit_time_str = format_timestamp_for_debug(edit_time)
-                                sync_time_str = format_timestamp_for_debug(sync_timestamp)
-                                delta_ms = edit_time - sync_timestamp
-                                delta_str = f"{delta_ms / 1000:.1f}秒" if delta_ms > 0 else f"{abs(delta_ms) / 1000:.1f}秒（早于）"
-                                print(f"  🔁 检测到 Joplin 笔记在同步后有修改，将重新同步到 Obsidian: {joplin_note.get('title', 'Unknown')} (ID: {notebridge_id[:8]}...)")
-                                print(f"     编辑时间: {edit_time_str}, 同步时间: {sync_time_str}, 时间差: {delta_str}")
+                                # 没有同步记录，说明从未同步过，应该作为新笔记同步
+                                print(f"  🔁 检测到未同步的 Obsidian 来源笔记，将同步到 Obsidian: {joplin_note.get('title', 'Unknown')} (ID: {notebridge_id[:8]}...)")
                                 unmatched_joplin_ids.add(joplin_note['id'])
                         elif any(matches_pattern(notebook, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
                             # 单向同步笔记本且来源不明确，允许重新同步
@@ -1495,10 +1536,16 @@ def sync_joplin_to_obsidian(joplin_note, obsidian_folder='根目录'):
         # 先自动清理重复头部（确保提取到正确的同步信息）
         cleaned_joplin_body = clean_duplicate_sync_info(joplin_note['body'])
         
-        # 检查是否已有同步信息，如果有就不重新生成
+        # 检查是否已有同步信息，如果有就不重新生成ID，但要更新时间
         existing_sync_info = extract_sync_info_from_joplin(cleaned_joplin_body)
         if existing_sync_info.get('notebridge_id'):
-            sync_info = existing_sync_info
+            # 使用现有的同步ID，但更新同步时间（重新同步时应该更新时间）
+            sync_info = generate_sync_info('joplin')
+            sync_info['notebridge_id'] = existing_sync_info['notebridge_id']
+            # 保留来源信息
+            if existing_sync_info.get('notebridge_source'):
+                sync_info['notebridge_source'] = existing_sync_info['notebridge_source']
+            # 注意：不保留旧的同步时间，使用新生成的当前时间
             # 移除Joplin的HTML注释格式，准备转换为Obsidian的YAML格式
             content = cleaned_joplin_body
             # 清理HTML注释格式的同步信息（更彻底）
@@ -1865,16 +1912,16 @@ def sync_obsidian_to_joplin_with_notebook_id(obsidian_note, notebook_id):
         start_time = time.time()
         try:
             print(f"[同步] 开始同步笔记: {obsidian_note['title']} (第{attempt+1}次尝试，超时设置: {timeout}秒)")
-            # 检查是否已有同步信息，如果有就不重新生成
+            # 检查是否已有同步信息，如果有就不重新生成ID，但要更新时间
             existing_sync_info = extract_sync_info_from_obsidian(obsidian_note['body'])
             if existing_sync_info.get('notebridge_id'):
-                # 使用现有的同步ID，但确保所有字段都存在
+                # 使用现有的同步ID，但更新同步时间（重新同步时应该更新时间）
                 sync_info = generate_sync_info('obsidian')
                 sync_info['notebridge_id'] = existing_sync_info['notebridge_id']
-                if existing_sync_info.get('notebridge_sync_time'):
-                    sync_info['notebridge_sync_time'] = existing_sync_info['notebridge_sync_time']
+                # 保留来源信息
                 if existing_sync_info.get('notebridge_source'):
                     sync_info['notebridge_source'] = existing_sync_info['notebridge_source']
+                # 注意：不保留旧的同步时间，使用新生成的当前时间
                 # 移除Obsidian的YAML格式，准备转换为Joplin的HTML注释格式
                 content = obsidian_note['body']
                 # 清理YAML frontmatter中的同步信息
@@ -1919,11 +1966,22 @@ def sync_obsidian_to_joplin_with_notebook_id(obsidian_note, notebook_id):
                 print(f"[同步] existing_sync_info: {existing_sync_info}")
                 
                 # 重要：回写同步信息到Obsidian端，确保Obsidian也有同步信息（YAML格式）
+                # 无论是否已有同步信息，都需要回写以更新同步时间
+                need_writeback = False
+                writeback_reason = ""
+                
                 if not existing_sync_info.get('notebridge_id'):
-                    print(f"[同步] ✓ 需要回写（Obsidian 端没有同步信息）")
-                    # 只有原本没有同步信息的笔记才需要回写
+                    need_writeback = True
+                    writeback_reason = "Obsidian 端没有同步信息"
+                elif existing_sync_info.get('notebridge_sync_time') != sync_info.get('notebridge_sync_time'):
+                    need_writeback = True
+                    writeback_reason = "需要更新同步时间"
+                
+                if need_writeback:
+                    print(f"[同步] ✓ 需要回写（{writeback_reason}）")
                     print(f"[同步] 准备回写同步信息到 Obsidian...")
                     print(f"[同步] 同步 ID: {sync_info['notebridge_id']}")
+                    print(f"[同步] 同步时间: {sync_info['notebridge_sync_time']}")
                     
                     # 检查路径长度
                     path_length = len(obsidian_note['path'])
@@ -1968,7 +2026,7 @@ def sync_obsidian_to_joplin_with_notebook_id(obsidian_note, notebook_id):
                         import traceback
                         traceback.print_exc()
                 else:
-                    print(f"[同步] Obsidian 端已有同步信息，无需回写（ID: {existing_sync_info['notebridge_id'][:8]}...）")
+                    print(f"[同步] Obsidian 端同步信息已是最新，无需回写")
                 
                 return True, resp.json()['id']
             else:
@@ -2691,15 +2749,39 @@ def perform_sync(matched_pairs, unmatched_joplin, unmatched_obsidian):
             
             if joplin_has_changes and not obsidian_has_changes and SYNC_DIRECTION in ['bidirectional', 'joplin_to_obsidian']:
                 # 只有 Joplin 端有修改，同步到 Obsidian
-                success, result = update_obsidian_note(obsidian_note['path'], joplin_content)
+                # 需要更新同步时间
+                new_sync_info = generate_sync_info(joplin_sync_info.get('notebridge_source', 'joplin'))
+                new_sync_info['notebridge_id'] = joplin_sync_info.get('notebridge_id', new_sync_info['notebridge_id'])
+                
+                # 清理并添加新的同步信息
+                cleaned_joplin = clean_duplicate_sync_info(joplin_content)
+                updated_joplin_content = add_sync_info_to_joplin_content(cleaned_joplin, new_sync_info)
+                cleaned_obsidian = clean_duplicate_sync_info(obsidian_content)
+                updated_obsidian_content = add_sync_info_to_obsidian_content(cleaned_joplin, new_sync_info)
+                
+                success, result = update_obsidian_note(obsidian_note['path'], updated_obsidian_content)
                 if success:
+                    # 同时更新 Joplin 端的同步时间
+                    update_joplin_note(joplin_note['id'], updated_joplin_content)
                     sync_results['updated'].append(f"Joplin → Obsidian: {joplin_note['title']}")
                 else:
                     sync_results['failed'].append(f"Joplin → Obsidian: {joplin_note['title']} - {result}")
             elif obsidian_has_changes and not joplin_has_changes and SYNC_DIRECTION in ['bidirectional', 'obsidian_to_joplin']:
                 # 只有 Obsidian 端有修改，同步到 Joplin
-                success, result = update_joplin_note(joplin_note['id'], obsidian_content)
+                # 需要更新同步时间
+                new_sync_info = generate_sync_info(obsidian_sync_info.get('notebridge_source', 'obsidian'))
+                new_sync_info['notebridge_id'] = obsidian_sync_info.get('notebridge_id', new_sync_info['notebridge_id'])
+                
+                # 清理并添加新的同步信息
+                cleaned_obsidian = clean_duplicate_sync_info(obsidian_content)
+                updated_obsidian_content = add_sync_info_to_obsidian_content(cleaned_obsidian, new_sync_info)
+                cleaned_joplin = clean_duplicate_sync_info(joplin_content)
+                updated_joplin_content = add_sync_info_to_joplin_content(cleaned_obsidian, new_sync_info)
+                
+                success, result = update_joplin_note(joplin_note['id'], updated_joplin_content)
                 if success:
+                    # 同时更新 Obsidian 端的同步时间
+                    update_obsidian_note(obsidian_note['path'], updated_obsidian_content)
                     sync_results['updated'].append(f"Obsidian → Joplin: {obsidian_note['title']}")
                 else:
                     sync_results['failed'].append(f"Obsidian → Joplin: {obsidian_note['title']} - {result}")
@@ -3796,8 +3878,20 @@ def perform_sync_with_skip(matched_pairs, unmatched_joplin, unmatched_obsidian):
             
             if joplin_has_changes and not obsidian_has_changes and SYNC_DIRECTION in ['bidirectional', 'joplin_to_obsidian']:
                 # 只有 Joplin 端有修改，同步到 Obsidian
-                success, result = update_obsidian_note(obsidian_note['path'], joplin_content)
+                # 需要更新同步时间
+                new_sync_info = generate_sync_info(joplin_sync_info.get('notebridge_source', 'joplin'))
+                new_sync_info['notebridge_id'] = joplin_sync_info.get('notebridge_id', new_sync_info['notebridge_id'])
+                
+                # 清理并添加新的同步信息
+                cleaned_joplin = clean_duplicate_sync_info(joplin_content)
+                updated_joplin_content = add_sync_info_to_joplin_content(cleaned_joplin, new_sync_info)
+                cleaned_obsidian = clean_duplicate_sync_info(obsidian_content)
+                updated_obsidian_content = add_sync_info_to_obsidian_content(cleaned_joplin, new_sync_info)
+                
+                success, result = update_obsidian_note(obsidian_note['path'], updated_obsidian_content)
                 if success:
+                    # 同时更新 Joplin 端的同步时间
+                    update_joplin_note(joplin_note['id'], updated_joplin_content)
                     sync_results['updated'].append(f"Joplin → Obsidian: {joplin_note['title']}")
                     # 更新动态同步状态
                     notebridge_id = joplin_sync_info.get('notebridge_id')
@@ -3817,8 +3911,20 @@ def perform_sync_with_skip(matched_pairs, unmatched_joplin, unmatched_obsidian):
                     sync_results['failed'].append(f"Joplin → Obsidian: {joplin_note['title']} - {result}")
             elif obsidian_has_changes and not joplin_has_changes and SYNC_DIRECTION in ['bidirectional', 'obsidian_to_joplin']:
                 # 只有 Obsidian 端有修改，同步到 Joplin
-                success, result = update_joplin_note(joplin_note['id'], obsidian_content)
+                # 需要更新同步时间
+                new_sync_info = generate_sync_info(obsidian_sync_info.get('notebridge_source', 'obsidian'))
+                new_sync_info['notebridge_id'] = obsidian_sync_info.get('notebridge_id', new_sync_info['notebridge_id'])
+                
+                # 清理并添加新的同步信息
+                cleaned_obsidian = clean_duplicate_sync_info(obsidian_content)
+                updated_obsidian_content = add_sync_info_to_obsidian_content(cleaned_obsidian, new_sync_info)
+                cleaned_joplin = clean_duplicate_sync_info(joplin_content)
+                updated_joplin_content = add_sync_info_to_joplin_content(cleaned_obsidian, new_sync_info)
+                
+                success, result = update_joplin_note(joplin_note['id'], updated_joplin_content)
                 if success:
+                    # 同时更新 Obsidian 端的同步时间
+                    update_obsidian_note(obsidian_note['path'], updated_obsidian_content)
                     sync_results['updated'].append(f"Obsidian → Joplin: {obsidian_note['title']}")
                     # 更新动态同步状态
                     notebridge_id = obsidian_sync_info.get('notebridge_id')
@@ -6049,9 +6155,21 @@ def manual_confirm_sync():
                     # 执行同步
                     if sync_direction == 'joplin_to_obsidian':
                         # 先检查并修复重复头部
-                        cleaned_content = check_and_fix_sync_headers(joplin_note['body'], joplin_note['title'])
-                        success, result = update_obsidian_note(obsidian_note['path'], cleaned_content)
+                        cleaned_joplin = check_and_fix_sync_headers(joplin_note['body'], joplin_note['title'])
+                        
+                        # 更新同步时间
+                        new_sync_info = generate_sync_info(joplin_sync_info.get('notebridge_source', 'joplin'))
+                        new_sync_info['notebridge_id'] = joplin_sync_info.get('notebridge_id', new_sync_info['notebridge_id'])
+                        
+                        # 清理并添加新的同步信息
+                        cleaned_content = clean_duplicate_sync_info(cleaned_joplin)
+                        updated_joplin_content = add_sync_info_to_joplin_content(cleaned_content, new_sync_info)
+                        updated_obsidian_content = add_sync_info_to_obsidian_content(cleaned_content, new_sync_info)
+                        
+                        success, result = update_obsidian_note(obsidian_note['path'], updated_obsidian_content)
                         if success:
+                            # 同时更新 Joplin 端的同步时间
+                            update_joplin_note(joplin_note['id'], updated_joplin_content)
                             sync_results['success'] += 1
                             sync_results['details'].append(f"✅ Joplin → Obsidian: {joplin_note['title']}")
                             print(f"  ✅ 同步成功")
@@ -6061,9 +6179,21 @@ def manual_confirm_sync():
                             print(f"  ❌ 同步失败: {result}")
                     else:  # obsidian_to_joplin
                         # 先检查并修复重复头部
-                        cleaned_content = check_and_fix_sync_headers(obsidian_note['body'], obsidian_note['title'])
-                        success, result = update_joplin_note(joplin_note['id'], cleaned_content)
+                        cleaned_obsidian = check_and_fix_sync_headers(obsidian_note['body'], obsidian_note['title'])
+                        
+                        # 更新同步时间
+                        new_sync_info = generate_sync_info(obsidian_sync_info.get('notebridge_source', 'obsidian'))
+                        new_sync_info['notebridge_id'] = obsidian_sync_info.get('notebridge_id', new_sync_info['notebridge_id'])
+                        
+                        # 清理并添加新的同步信息
+                        cleaned_content = clean_duplicate_sync_info(cleaned_obsidian)
+                        updated_obsidian_content = add_sync_info_to_obsidian_content(cleaned_content, new_sync_info)
+                        updated_joplin_content = add_sync_info_to_joplin_content(cleaned_content, new_sync_info)
+                        
+                        success, result = update_joplin_note(joplin_note['id'], updated_joplin_content)
                         if success:
+                            # 同时更新 Obsidian 端的同步时间
+                            update_obsidian_note(obsidian_note['path'], updated_obsidian_content)
                             sync_results['success'] += 1
                             sync_results['details'].append(f"✅ Obsidian → Joplin: {obsidian_note['title']}")
                             print(f"  ✅ 同步成功")
@@ -6212,17 +6342,37 @@ def manual_confirm_sync():
             force_sync_to_obsidian = False
             if notebridge_id and notebridge_id not in current_obsidian_ids:
                 # Obsidian端没有这个ID，需要判断是删除还是重新同步
-                if source == 'obsidian':
-                    # 如果来源是obsidian，说明原本是从Obsidian同步过来的，现在Obsidian端没有了
-                    # 这应该是删除候选，而不是新笔记
-                    print(f"  ⚠️ 检测到 Obsidian 端已删除此笔记（ID: {notebridge_id[:8]}...）")
-                    print(f"  💡 提示: 此笔记将在删除处理阶段询问是否删除 Joplin 端")
+                sync_time = sync_info.get('notebridge_sync_time', '')
+                
+                # 先检查上次同步状态
+                was_synced_before = previous_state and notebridge_id in previous_joplin_ids and notebridge_id in previous_obsidian_ids
+                
+                if sync_time or was_synced_before:
+                    # 有同步记录，说明之前已经同步过，现在 Obsidian 端没有了
+                    # 应该作为删除候选，而不是重新同步
+                    print(f"  📌 判断依据:")
+                    if sync_time:
+                        print(f"     - 有同步时间记录: {sync_time}")
+                    if was_synced_before:
+                        print(f"     - 上次同步状态: 两端都存在")
+                    print(f"     - 判断结果: Obsidian 端已删除")
+                    
+                    # 添加到删除候选列表
+                    if not any(c.get('notebridge_id') == notebridge_id for c in deleted_candidates):
+                        deleted_candidates.append({
+                            'type': 'obsidian_deleted',
+                            'note': note,
+                            'notebridge_id': notebridge_id,
+                            'title': note.get('title', 'Unknown')
+                        })
+                        print(f"  ➕ 已添加到删除候选列表，将在删除处理阶段询问")
+                    
                     sync_results['skipped'] += 1
                     continue
                 else:
-                    # 来源是joplin或没有来源，可能是新笔记或需要重新同步
+                    # 没有同步记录，说明从未同步过，应该作为新笔记同步
                     force_sync_to_obsidian = True
-                    print(f"  🔁 检测到 Obsidian 端缺失此 ID，允许重新同步（ID: {notebridge_id[:8]}...）")
+                    print(f"  🔁 检测到 Obsidian 端缺失此 ID，允许同步（ID: {notebridge_id[:8]}...）")
             
             # 检查是否是已经同步过的笔记（避免重复同步）
             if not force_sync_to_obsidian and notebridge_id and previous_state:
@@ -6388,9 +6538,35 @@ def manual_confirm_sync():
                             force_sync = True
                             print(f"  🔁 检测到未同步的 Obsidian 笔记，将同步到 Joplin（ID: {notebridge_id[:8]}...）")
                     else:
-                        # 来源不明确或没有来源，可能是新笔记或需要重新同步
-                        force_sync = True
-                        print(f"  🔁 检测到 Joplin 端缺失此 ID，允许重新同步（ID: {notebridge_id[:8]}...）")
+                        # 来源不明确或没有来源，需要判断是删除还是新笔记
+                        sync_time = sync_info.get('notebridge_sync_time', '')
+                        was_synced_before = previous_state and notebridge_id in previous_joplin_ids and notebridge_id in previous_obsidian_ids
+                        
+                        if sync_time or was_synced_before:
+                            # 有同步记录，说明之前已经同步过，现在 Joplin 端没有了
+                            print(f"  📌 判断依据:")
+                            if sync_time:
+                                print(f"     - 有同步时间记录: {sync_time}")
+                            if was_synced_before:
+                                print(f"     - 上次同步状态: 两端都存在")
+                            print(f"     - 判断结果: Joplin 端已删除")
+                            
+                            # 添加到删除候选列表
+                            if not any(c.get('notebridge_id') == notebridge_id for c in deleted_candidates):
+                                deleted_candidates.append({
+                                    'type': 'joplin_deleted',
+                                    'note': note,
+                                    'notebridge_id': notebridge_id,
+                                    'title': note.get('title', 'Unknown')
+                                })
+                                print(f"  ➕ 已添加到删除候选列表，将在删除处理阶段询问")
+                            
+                            sync_results['skipped'] += 1
+                            continue
+                        else:
+                            # 没有同步记录，说明从未同步过，应该作为新笔记同步
+                            force_sync = True
+                            print(f"  🔁 检测到 Joplin 端缺失此 ID，允许同步（ID: {notebridge_id[:8]}...）")
                 else:
                     # 检查是否在上次同步状态中
                     if previous_state and notebridge_id in previous_joplin_ids and notebridge_id in previous_obsidian_ids:
@@ -6506,6 +6682,26 @@ def manual_confirm_sync():
                 print(f"  文件夹: {note.get('folder', '根目录')}")
                 print(f"  路径: {note['path']}")
                 print(f"  ID: {candidate['notebridge_id'][:8]}...")
+                
+                # 显示判断依据
+                sync_info = extract_sync_info_from_obsidian(note['body'])
+                print(f"\n  📊 判断依据:")
+                print(f"    - 笔记来源: {sync_info.get('notebridge_source', '未知')}")
+                if sync_info.get('notebridge_sync_time'):
+                    print(f"    - 最后同步: {sync_info['notebridge_sync_time']}")
+                else:
+                    print(f"    - 最后同步: 从未同步")
+                
+                # 检查是否在上次同步状态中存在
+                if previous_state:
+                    notebridge_id = candidate['notebridge_id']
+                    was_synced = notebridge_id in previous_joplin_ids and notebridge_id in previous_obsidian_ids
+                    if was_synced:
+                        print(f"    - 上次同步: ✅ 两端都存在")
+                        print(f"    - 判断结果: 📌 Joplin 端已删除（置信度高）")
+                    else:
+                        print(f"    - 上次同步: ⚠️ 状态不明")
+                        print(f"    - 判断结果: ❓ 无法确定是删除还是新增")
 
                 folder = note.get('folder', '根目录')
                 if any(matches_pattern(folder, pattern) for pattern in sync_rules['joplin_to_obsidian_only']):
@@ -6513,7 +6709,14 @@ def manual_confirm_sync():
                     sync_results['skipped'] += 1
                     continue
                 
-                choice = input(f"\n  是否删除此 Obsidian 笔记？ [y/n/q(退出)/s(跳过所有)]: ").strip().lower()
+                print(f"\n  请选择操作:")
+                print(f"    1. 删除 Obsidian 端（保持与 Joplin 同步）")
+                print(f"    2. 复制到 Joplin 端（恢复此笔记）")
+                print(f"    3. 跳过此笔记")
+                print(f"    q. 退出")
+                print(f"    s. 跳过所有剩余删除操作")
+                
+                choice = input(f"\n  请输入选项 [1/2/3/q/s]: ").strip().lower()
                 
                 if choice == 'q':
                     print("\n❌ 用户取消删除操作")
@@ -6521,7 +6724,7 @@ def manual_confirm_sync():
                 elif choice == 's':
                     print("\n⏭️ 跳过剩余所有删除操作")
                     break
-                elif choice == 'y':
+                elif choice == '1':
                     try:
                         success = safe_delete_obsidian_file(note['path'])
                         if success:
@@ -6534,8 +6737,28 @@ def manual_confirm_sync():
                     except Exception as e:
                         print(f"  ❌ 删除时出错: {e}")
                         sync_results['failed'] += 1
+                elif choice == '2':
+                    # 复制到 Joplin
+                    try:
+                        folder_path = note.get('folder', '根目录')
+                        notebook_id, error = get_or_create_joplin_notebook(folder_path)
+                        if error:
+                            print(f"  ❌ 创建笔记本失败: {error}")
+                            sync_results['failed'] += 1
+                        else:
+                            success, result = sync_obsidian_to_joplin_with_notebook_id(note, notebook_id)
+                            if success:
+                                print(f"  ✅ 已复制到 Joplin: {note['title']}")
+                                sync_results['success'] += 1
+                                sync_results['details'].append(f"复制 Obsidian → Joplin: {note['title']}")
+                            else:
+                                print(f"  ❌ 复制失败: {result}")
+                                sync_results['failed'] += 1
+                    except Exception as e:
+                        print(f"  ❌ 复制时出错: {e}")
+                        sync_results['failed'] += 1
                 else:
-                    print(f"  ⏭️ 跳过删除")
+                    print(f"  ⏭️ 跳过")
                     sync_results['skipped'] += 1
                     
             elif candidate['type'] == 'obsidian_deleted':
@@ -6544,6 +6767,26 @@ def manual_confirm_sync():
                 print(f"  标题: {note['title']}")
                 print(f"  笔记本: {note.get('notebook', '未分类')}")
                 print(f"  ID: {candidate['notebridge_id'][:8]}...")
+                
+                # 显示判断依据
+                sync_info = extract_sync_info_from_joplin(note['body'])
+                print(f"\n  📊 判断依据:")
+                print(f"    - 笔记来源: {sync_info.get('notebridge_source', '未知')}")
+                if sync_info.get('notebridge_sync_time'):
+                    print(f"    - 最后同步: {sync_info['notebridge_sync_time']}")
+                else:
+                    print(f"    - 最后同步: 从未同步")
+                
+                # 检查是否在上次同步状态中存在
+                if previous_state:
+                    notebridge_id = candidate['notebridge_id']
+                    was_synced = notebridge_id in previous_joplin_ids and notebridge_id in previous_obsidian_ids
+                    if was_synced:
+                        print(f"    - 上次同步: ✅ 两端都存在")
+                        print(f"    - 判断结果: 📌 Obsidian 端已删除（置信度高）")
+                    else:
+                        print(f"    - 上次同步: ⚠️ 状态不明")
+                        print(f"    - 判断结果: ❓ 无法确定是删除还是新增")
 
                 notebook = note.get('notebook', '未分类')
                 if any(matches_pattern(notebook, pattern) for pattern in sync_rules['obsidian_to_joplin_only']):
@@ -6551,7 +6794,14 @@ def manual_confirm_sync():
                     sync_results['skipped'] += 1
                     continue
                 
-                choice = input(f"\n  是否删除此 Joplin 笔记？ [y/n/q(退出)/s(跳过所有)]: ").strip().lower()
+                print(f"\n  请选择操作:")
+                print(f"    1. 删除 Joplin 端（保持与 Obsidian 同步）")
+                print(f"    2. 复制到 Obsidian 端（恢复此笔记）")
+                print(f"    3. 跳过此笔记")
+                print(f"    q. 退出")
+                print(f"    s. 跳过所有剩余删除操作")
+                
+                choice = input(f"\n  请输入选项 [1/2/3/q/s]: ").strip().lower()
                 
                 if choice == 'q':
                     print("\n❌ 用户取消删除操作")
@@ -6559,7 +6809,7 @@ def manual_confirm_sync():
                 elif choice == 's':
                     print("\n⏭️ 跳过剩余所有删除操作")
                     break
-                elif choice == 'y':
+                elif choice == '1':
                     try:
                         success = safe_delete_joplin_note(note['id'])
                         if success:
@@ -6572,8 +6822,23 @@ def manual_confirm_sync():
                     except Exception as e:
                         print(f"  ❌ 删除时出错: {e}")
                         sync_results['failed'] += 1
+                elif choice == '2':
+                    # 复制到 Obsidian
+                    try:
+                        notebook_path = note.get('notebook', '未分类')
+                        success, result = sync_joplin_to_obsidian(note, notebook_path)
+                        if success:
+                            print(f"  ✅ 已复制到 Obsidian: {note['title']}")
+                            sync_results['success'] += 1
+                            sync_results['details'].append(f"复制 Joplin → Obsidian: {note['title']}")
+                        else:
+                            print(f"  ❌ 复制失败: {result}")
+                            sync_results['failed'] += 1
+                    except Exception as e:
+                        print(f"  ❌ 复制时出错: {e}")
+                        sync_results['failed'] += 1
                 else:
-                    print(f"  ⏭️ 跳过删除")
+                    print(f"  ⏭️ 跳过")
                     sync_results['skipped'] += 1
     
     # 4. 处理移动的笔记
