@@ -26,12 +26,27 @@ notebridge 可以让你在 Windows 系统下，轻松同步 Joplin 和 Obsidian 
 
 ## 安装方法
 
+### 方式一：从 PyPI 安装（推荐）
+
+1. 安装 Python（推荐 3.8 及以上版本）。
+2. 在命令行中运行：
+   ```bash
+   pip install notebridge
+   ```
+3. 配置见下方「配置方法」。配置可放在**当前工作目录**的 `config.json`，或：
+   - Windows：`%APPDATA%\notebridge\config.json`
+   - macOS/Linux：`~/.config/notebridge/config.json`
+4. 在任意目录运行：`notebridge sync` 或 `python -m notebridge sync`。
+
+### 方式二：从源码安装
+
 1. 安装 Python（推荐 3.8 及以上版本）。
 2. 下载本项目代码。
 3. 在命令行中进入项目文件夹，运行：
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
+4. 在项目目录下放好 `config.json` 后运行：`python notebridge.py sync`。
 
 ---
 
@@ -45,7 +60,7 @@ notebridge 可以让你在 Windows 系统下，轻松同步 Joplin 和 Obsidian 
 2. **Obsidian 设置**
    - 找到你 Obsidian 的笔记库文件夹路径。
 3. **创建配置文件**
-   - 在项目根目录下新建 `config.json`，内容示例：
+   - 在**当前工作目录**新建 `config.json`，或在上方指定用户目录新建，内容示例：
      ```json
      {
        "joplin": {

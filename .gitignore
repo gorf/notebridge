@@ -1,2 +1,6 @@
 config.json
-.sync_cache.json 
+.sync_cache.json
+dist/
+build/
+*.egg-info/
+__pycache__/

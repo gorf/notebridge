@@ -26,12 +26,20 @@ You just need to enter one command in the terminal, and the tool will automatica
 
 ## Installation
 
-1. Install Python (version 3.8 or higher recommended).
-2. Download the project code.
-3. In the command line, navigate to the project folder and run:
-   ```
-   pip install -r requirements.txt
-   ```
+### Option 1: From PyPI (recommended)
+
+1. Install Python (3.8+ recommended).
+2. Run: `pip install notebridge`
+3. Put `config.json` in the **current working directory**, or in:
+   - Windows: `%APPDATA%\notebridge\config.json`
+   - macOS/Linux: `~/.config/notebridge/config.json`
+4. Run: `notebridge sync` or `python -m notebridge sync`
+
+### Option 2: From source
+
+1. Install Python (3.8+ recommended).
+2. Clone the repo and run: `pip install -r requirements.txt`
+3. Put `config.json` in the project folder and run: `python notebridge.py sync`
 
 ---
 
@@ -45,7 +53,7 @@ Before first use, simple configuration is required:
 2. **Obsidian Settings**
    - Find your Obsidian vault folder path.
 3. **Create Config File**
-   - Create `config.json` in the project root directory with example content:
+   - Create `config.json` in the **current working directory** or the path above, with example content:
      ```json
      {
        "joplin": {

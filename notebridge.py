@@ -16,9 +16,43 @@ import time
 import fnmatch
 import functools
 
-# 1. 读取配置文件 config.json
-with open('config.json', 'r', encoding='utf-8') as f:
-    config = json.load(f)
+
+def _get_config_path():
+    """
+    解析 config.json 路径：优先当前目录，否则用户配置目录。
+    - 当前目录存在 config.json 则使用（兼容 clone 后本地运行）
+    - 否则 Windows: %%APPDATA%%/notebridge/config.json，其他: ~/.config/notebridge/config.json
+    - 供 pip 安装后从任意目录运行 notebridge 时使用
+    """
+    cwd_path = os.path.join(os.getcwd(), 'config.json')
+    if os.path.isfile(cwd_path):
+        return cwd_path
+    if os.name == 'nt':
+        appdata = os.environ.get('APPDATA', '')
+        if appdata:
+            path = os.path.join(appdata, 'notebridge', 'config.json')
+            if os.path.isfile(path):
+                return path
+    else:
+        path = os.path.expanduser('~/.config/notebridge/config.json')
+        if os.path.isfile(path):
+            return path
+    return cwd_path  # 最终回退到当前目录，便于报错时提示
+
+
+# 1. 读取配置文件 config.json（支持当前目录或用户配置目录）
+try:
+    _config_path = _get_config_path()
+    with open(_config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    _suggest = "当前目录放 config.json，或创建："
+    if os.name == 'nt':
+        _suggest += f" {os.path.join(os.environ.get('APPDATA', ''), 'notebridge', 'config.json')}"
+    else:
+        _suggest += " ~/.config/notebridge/config.json"
+    print(f"未找到 config.json。{_suggest}")
+    raise
 
 # 2. 获取 Joplin API 信息
 joplin_api_base = config['joplin']['api_base']
@@ -7790,7 +7824,9 @@ def print_sync_results_with_duplicates(sync_results):
         print(f"\n💡 提示: 有 {len(sync_results['skipped_duplicates'])} 条重复笔记被跳过")
         print("   如需处理重复笔记，请运行: python notebridge.py interactive-clean")
 
-if __name__ == "__main__":
+def main():
+    """命令行入口（供 python -m notebridge 与 pip 安装后的 notebridge 命令使用）。"""
+    global SYNC_DIRECTION
     # 检查命令行参数
     if len(sys.argv) > 1:
         command = sys.argv[1]
@@ -8070,3 +8106,7 @@ if __name__ == "__main__":
             print("  python notebridge.py sync --force                    # 双向同步")
             print("  python notebridge.py sync --force --joplin-to-obsidian  # 仅 Joplin → Obsidian")
             print("  python notebridge.py sync --force --obsidian-to-joplin  # 仅 Obsidian → Joplin")
+
+
+if __name__ == "__main__":
+    main()
