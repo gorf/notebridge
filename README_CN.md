@@ -1,16 +1,16 @@
-# notebridge
+# Joplin-Obsidian Bridge
 
 [English](README.md) | [简体中文](README_CN.md)
 
 ---
 
-古有东家食西家眠，Joplin和Obsidian的特性我都割舍不掉，于是做了这个命令行工具，帮你实现 Joplin 和 Obsidian 笔记的双向同步。目前只是一个粗糙的初始版本。
+古有东家食西家眠，Joplin 和 Obsidian 的特性我都割舍不掉，于是做了这个命令行工具（**job**），帮你实现两边笔记的双向同步。PyPI 包名为 `joplin-obsidian-bridge`，安装后使用 `job` 命令运行。
 
 ---
 
 ## 工具简介
 
-notebridge 可以让你在 Windows 系统下，轻松同步 Joplin 和 Obsidian 里的所有笔记内容，包括：
+Joplin-Obsidian Bridge 可以让你在 Windows 下轻松同步 Joplin 与 Obsidian 的笔记内容，包括：
 - 标题
 - 正文
 - 标签

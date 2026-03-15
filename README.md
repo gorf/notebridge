@@ -1,16 +1,16 @@
-# notebridge
+# Joplin-Obsidian Bridge
 
 [English](README.md) | [简体中文](README_CN.md)
 
 ---
 
-Just like the old saying "eating at one house, sleeping at another," I can't give up the features of either Joplin or Obsidian, so I created this command-line tool to help you achieve bidirectional synchronization between Joplin and Obsidian notes. This is currently a rough initial version.
+Just like the old saying "eating at one house, sleeping at another," I can't give up the features of either Joplin or Obsidian, so I created this CLI (**job**) to sync notes between the two. Install from PyPI as `joplin-obsidian-bridge`; run with the `job` command.
 
 ---
 
 ## Tool Introduction
 
-notebridge allows you to easily synchronize all note content between Joplin and Obsidian on Windows, including:
+Joplin-Obsidian Bridge lets you sync note content between Joplin and Obsidian on Windows, including:
 - Titles
 - Body text
 - Tags
