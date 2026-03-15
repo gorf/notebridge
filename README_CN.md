@@ -8,6 +8,11 @@
 
 ---
 
+> **⚠️ 风险与备份**  
+> 同步可能会删除笔记（例如某侧被视为「权威来源」时），规则或时机不当也可能产生大量重复。**首次运行及重大同步前，请务必先备份 Joplin 数据与 Obsidian 笔记库。** 建议先用 `job sync-manual` 查看计划，再决定是否 `--force` 执行；可用 `job check-duplicates` 检查重复。
+
+---
+
 ## 工具简介
 
 Joplin-Obsidian Bridge 可以让你在 Windows 下轻松同步 Joplin 与 Obsidian 的笔记内容，包括：
@@ -37,7 +42,8 @@ Joplin-Obsidian Bridge 可以让你在 Windows 下轻松同步 Joplin 与 Obsidi
 3. 配置见下方「配置方法」。配置可放在**当前工作目录**的 `config.json`，或：
    - Windows：`%APPDATA%\notebridge\config.json`
    - macOS/Linux：`~/.config/notebridge/config.json`
-4. 在任意目录运行：`job sync` 或 `python -m notebridge sync`。
+4. 在任意目录运行：`job sync` 或 `python -m notebridge sync`。  
+   **请先备份 Joplin 与 Obsidian。** 建议使用 `job sync-manual` 先查看同步计划再执行。
 
 ### 方式二：从源码安装
 
@@ -85,6 +91,8 @@ Joplin-Obsidian Bridge 可以让你在 Windows 下轻松同步 Joplin 与 Obsidi
 ## 使用方法
 
 以下命令以 `job` 为例（pip 安装后使用）。若从源码运行，将 `job` 替换为 `python notebridge.py` 即可。
+
+**同步前请先备份** Joplin 与 Obsidian；误用可能导致笔记被删除或出现大量重复。
 
 ### 基本同步命令
 

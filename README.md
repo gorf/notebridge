@@ -8,6 +8,11 @@ Just like the old saying "eating at one house, sleeping at another," I can't giv
 
 ---
 
+> **⚠️ Risks and backup**  
+> Sync can delete notes (e.g. when treating a side as "source of truth") and can create duplicates if rules or timing are wrong. **Back up both your Joplin data and Obsidian vault before the first run and before major syncs.** Prefer `job sync-manual` and read the plan before using `--force`. Use `job check-duplicates` to spot duplicates.
+
+---
+
 ## Tool Introduction
 
 Joplin-Obsidian Bridge lets you sync note content between Joplin and Obsidian on Windows, including:
@@ -33,7 +38,8 @@ You just need to enter one command in the terminal, and the tool will automatica
 3. Put `config.json` in the **current working directory**, or in:
    - Windows: `%APPDATA%\notebridge\config.json`
    - macOS/Linux: `~/.config/notebridge/config.json`
-4. Run: `job sync` or `python -m notebridge sync`
+4. Run: `job sync` or `python -m notebridge sync`  
+   **Back up Joplin and Obsidian first.** Prefer `job sync-manual` to review the plan before applying changes.
 
 ### Option 2: From source
 
@@ -77,6 +83,8 @@ Before first use, simple configuration is required:
 ## Usage
 
 Commands below use `job` (after pip install). From source, replace `job` with `python notebridge.py`.
+
+**Before syncing:** Back up both Joplin and your Obsidian vault. Sync may delete or duplicate notes if used incorrectly.
 
 ### Basic Sync Commands
 
