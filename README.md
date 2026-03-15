@@ -29,11 +29,11 @@ You just need to enter one command in the terminal, and the tool will automatica
 ### Option 1: From PyPI (recommended)
 
 1. Install Python (3.8+ recommended).
-2. Run: `pip install notebridge`
+2. Run: `pip install joplin-obsidian-bridge`
 3. Put `config.json` in the **current working directory**, or in:
    - Windows: `%APPDATA%\notebridge\config.json`
    - macOS/Linux: `~/.config/notebridge/config.json`
-4. Run: `notebridge sync` or `python -m notebridge sync`
+4. Run: `job sync` or `python -m notebridge sync`
 
 ### Option 2: From source
 
@@ -76,55 +76,57 @@ Before first use, simple configuration is required:
 
 ## Usage
 
+Commands below use `job` (after pip install). From source, replace `job` with `python notebridge.py`.
+
 ### Basic Sync Commands
 
 ```bash
 # Preview sync plan (no actual sync)
-python notebridge.py sync
+job sync
 
 # Execute bidirectional sync
-python notebridge.py sync --force
+job sync --force
 
 # Sync only from Joplin to Obsidian
-python notebridge.py sync --force --joplin-to-obsidian
+job sync --force --joplin-to-obsidian
 
 # Sync only from Obsidian to Joplin
-python notebridge.py sync --force --obsidian-to-joplin
+job sync --force --obsidian-to-joplin
 
 # Manual confirmation mode sync (recommended, prevents duplicate headers)
-python notebridge.py sync-manual
+job sync-manual
 
 # Manual confirmation one-way sync
-python notebridge.py sync-manual --joplin-to-obsidian
-python notebridge.py sync-manual --obsidian-to-joplin
+job sync-manual --joplin-to-obsidian
+job sync-manual --obsidian-to-joplin
 ```
 
 ### Additional Feature Commands
 
 ```bash
 # Check for duplicate notes (ultra-fast version, greatly improved performance)
-python notebridge.py check-duplicates
+job check-duplicates
 
 # Quick title similarity check (recommended, manual decision)
-python notebridge.py quick-title-check
+job quick-title-check
 
 # Clean Joplin imports from Obsidian
-python notebridge.py clean-joplin-imports
+job clean-joplin-imports
 
 # Performance test comparison (new vs old algorithm)
-python notebridge.py test-duplicates
+job test-duplicates
 
 # Run tests (tags & attachments sync logic, no real Joplin/Obsidian needed)
 python -m unittest tests.test_tags_and_attachments -v
 
 # Interactive duplicate cleaning (recommended)
-python notebridge.py interactive-clean
+job interactive-clean
 
 # Auto-clean duplicate notes and sync IDs
-python notebridge.py clean-duplicates
+job clean-duplicates
 
 # Fix missing attachments in Obsidian
-python notebridge.py fix-attachments
+job fix-attachments
 ```
 
 ### Sync Mode Explanation
@@ -182,7 +184,7 @@ Example configuration:
 
 #### Quick Title Similarity Check (Recommended)
 ```bash
-python notebridge.py quick-title-check
+job quick-title-check
 ```
 - ⚡ **Blazing fast**: Only checks title similarity, extremely fast
 - 🎯 **Manual decision**: You have complete control over what's duplicate
@@ -193,7 +195,7 @@ python notebridge.py quick-title-check
 
 #### Clean Joplin Imports (Recommended)
 ```bash
-python notebridge.py clean-joplin-imports
+job clean-joplin-imports
 ```
 - 🔍 **Smart detection**: Automatically identifies notes from Joplin in Obsidian
 - 📊 **Status analysis**: Distinguishes unmodified, modified, and orphaned notes
@@ -203,7 +205,7 @@ python notebridge.py clean-joplin-imports
 
 #### Ultra-fast Duplicate Check (Fully Automatic)
 ```bash
-python notebridge.py check-duplicates
+job check-duplicates
 ```
 - 🚀 **Layered detection algorithm**: Uses 5-layer detection strategy, 3-5x performance improvement
 - 🔍 **Smart content preprocessing**: More thorough removal of headers, markdown syntax, HTML tags, etc.
@@ -214,7 +216,7 @@ python notebridge.py check-duplicates
 
 #### Performance Testing
 ```bash
-python notebridge.py test-duplicates
+job test-duplicates
 ```
 - Compare new vs old algorithm performance
 - Show detection result differences
@@ -222,7 +224,7 @@ python notebridge.py test-duplicates
 
 #### Interactive Cleaning (Recommended)
 ```bash
-python notebridge.py interactive-clean
+job interactive-clean
 ```
 - Smart duplicate note detection
 - Multiple cleaning strategy options
@@ -231,7 +233,7 @@ python notebridge.py interactive-clean
 
 #### Auto Cleaning
 ```bash
-python notebridge.py clean-duplicates
+job clean-duplicates
 ```
 - Auto-clean duplicate sync IDs in all notes
 - Auto-find and delete duplicate notes
@@ -258,7 +260,7 @@ python notebridge.py clean-duplicates
 - **Q: What improvements does the new duplicate detection algorithm have?**
   A: The new algorithm uses a 5-layer detection strategy with 3-5x performance improvement, more accurately detecting "same content after removing headers" duplicates.
 - **Q: What if duplicate checking is too slow?**
-  A: The new version has greatly optimized performance using caching and layered detection with significant speed improvements. If still slow, run `python notebridge.py test-duplicates` to view performance comparison.
+  A: The new version has greatly optimized performance using caching and layered detection with significant speed improvements. If still slow, run `job test-duplicates` to view performance comparison.
 - **Q: How to detect "same content after removing headers" duplicates?**
   A: The new algorithm specifically adds a 5th layer detection using advanced similarity calculation to accurately identify such duplicates.
 - **Q: What if one-way sync rules don't take effect?**
@@ -356,11 +358,11 @@ python notebridge.py clean-duplicates
 - ✅ Scenario 4: Note from Joplin, modified in Obsidian → **Allow sync**
 
 ### Duplicate Header Problem Solution
-1. **Immediate fix**: Run `python notebridge.py fix-duplicate-headers` to fix existing duplicate headers
+1. **Immediate fix**: Run `job fix-duplicate-headers` to fix existing duplicate headers
 2. **Preventive measures**:
-   - Use manual confirmation mode sync: `python notebridge.py sync-manual`
+   - Use manual confirmation mode sync: `job sync-manual`
    - Auto-check and fix duplicate headers before each sync
-   - Regular preventive checks: `python notebridge.py prevent-duplicate-headers`
+   - Regular preventive checks: `job prevent-duplicate-headers`
 3. **Root solution**:
    - Improved sync info addition logic, thoroughly cleans old sync info
    - Added duplicate header check in `update_obsidian_note` function

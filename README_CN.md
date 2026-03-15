@@ -31,12 +31,12 @@ notebridge 可以让你在 Windows 系统下，轻松同步 Joplin 和 Obsidian 
 1. 安装 Python（推荐 3.8 及以上版本）。
 2. 在命令行中运行：
    ```bash
-   pip install notebridge
+   pip install joplin-obsidian-bridge
    ```
 3. 配置见下方「配置方法」。配置可放在**当前工作目录**的 `config.json`，或：
    - Windows：`%APPDATA%\notebridge\config.json`
    - macOS/Linux：`~/.config/notebridge/config.json`
-4. 在任意目录运行：`notebridge sync` 或 `python -m notebridge sync`。
+4. 在任意目录运行：`job sync` 或 `python -m notebridge sync`。
 
 ### 方式二：从源码安装
 
@@ -83,55 +83,57 @@ notebridge 可以让你在 Windows 系统下，轻松同步 Joplin 和 Obsidian 
 
 ## 使用方法
 
+以下命令以 `job` 为例（pip 安装后使用）。若从源码运行，将 `job` 替换为 `python notebridge.py` 即可。
+
 ### 基本同步命令
 
 ```bash
 # 预览同步计划（不执行实际同步）
-python notebridge.py sync
+job sync
 
 # 执行双向同步
-python notebridge.py sync --force
+job sync --force
 
 # 仅从 Joplin 同步到 Obsidian
-python notebridge.py sync --force --joplin-to-obsidian
+job sync --force --joplin-to-obsidian
 
 # 仅从 Obsidian 同步到 Joplin
-python notebridge.py sync --force --obsidian-to-joplin
+job sync --force --obsidian-to-joplin
 
 # 手工确认模式同步（推荐，防止重复头部问题）
-python notebridge.py sync-manual
+job sync-manual
 
 # 手工确认单向同步
-python notebridge.py sync-manual --joplin-to-obsidian
-python notebridge.py sync-manual --obsidian-to-joplin
+job sync-manual --joplin-to-obsidian
+job sync-manual --obsidian-to-joplin
 ```
 
 ### 其他功能命令
 
 ```bash
 # 检查重复笔记（超快速版，性能大幅提升）
-python notebridge.py check-duplicates
+job check-duplicates
 
 # 快速标题相似度检测（推荐，手工决定）
-python notebridge.py quick-title-check
+job quick-title-check
 
 # 清理Obsidian中来自Joplin的笔记
-python notebridge.py clean-joplin-imports
+job clean-joplin-imports
 
 # 性能测试对比（新旧算法对比）
-python notebridge.py test-duplicates
+job test-duplicates
 
 # 运行测试（标签与附件同步逻辑，无需真实 Joplin/Obsidian）
 python -m unittest tests.test_tags_and_attachments -v
 
 # 交互式清理重复笔记（推荐）
-python notebridge.py interactive-clean
+job interactive-clean
 
 # 自动清理重复笔记和同步ID
-python notebridge.py clean-duplicates
+job clean-duplicates
 
 # 补全 Obsidian 中缺失的附件
-python notebridge.py fix-attachments
+job fix-attachments
 ```
 
 ### 同步模式说明
@@ -187,7 +189,7 @@ python notebridge.py fix-attachments
 
 #### 快速标题相似度检测（推荐）
 ```bash
-python notebridge.py quick-title-check
+job quick-title-check
 ```
 - ⚡ **极速检测**：只检测标题相似度，速度极快
 - 🎯 **手工决定**：让你完全控制哪些是重复的
@@ -198,7 +200,7 @@ python notebridge.py quick-title-check
 
 #### 清理Joplin导入笔记（推荐）
 ```bash
-python notebridge.py clean-joplin-imports
+job clean-joplin-imports
 ```
 - 🔍 **智能检测**：自动识别Obsidian中来自Joplin的笔记
 - 📊 **状态分析**：区分未修改、已修改、孤立的笔记
@@ -208,7 +210,7 @@ python notebridge.py clean-joplin-imports
 
 #### 超快速查重（全自动）
 ```bash
-python notebridge.py check-duplicates
+job check-duplicates
 ```
 - 🚀 **分层检测算法**：使用5层检测策略，性能提升3-5倍
 - 🔍 **智能内容预处理**：更彻底地去除头部信息、markdown语法、HTML标签等
@@ -219,7 +221,7 @@ python notebridge.py check-duplicates
 
 #### 性能测试
 ```bash
-python notebridge.py test-duplicates
+job test-duplicates
 ```
 - 对比新旧算法性能
 - 显示检测结果差异
@@ -227,7 +229,7 @@ python notebridge.py test-duplicates
 
 #### 交互式清理（推荐）
 ```bash
-python notebridge.py interactive-clean
+job interactive-clean
 ```
 - 智能检测重复笔记
 - 提供多种清理策略选择
@@ -236,7 +238,7 @@ python notebridge.py interactive-clean
 
 #### 自动清理
 ```bash
-python notebridge.py clean-duplicates
+job clean-duplicates
 ```
 - 自动清理所有笔记中的重复同步ID
 - 自动查找并删除重复笔记
@@ -263,7 +265,7 @@ python notebridge.py clean-duplicates
 - **Q：新的重复检测算法有什么改进？**
   A：新算法使用5层检测策略，性能提升3-5倍，能更准确地检测"去掉头部信息后内容相同"的重复笔记。
 - **Q：查重速度太慢怎么办？**
-  A：新版本已经大幅优化了性能，使用缓存机制和分层检测，速度提升显著。如果仍然慢，可以运行 `python notebridge.py test-duplicates` 查看性能对比。
+  A：新版本已经大幅优化了性能，使用缓存机制和分层检测，速度提升显著。如果仍然慢，可以运行 `job test-duplicates` 查看性能对比。
 - **Q：如何检测"去掉头部信息后内容相同"的重复？**
   A：新算法专门增加了第5层检测，使用高级相似度计算，能准确识别这类重复。
 - **Q：单向同步规则没有生效怎么办？**
@@ -344,11 +346,11 @@ python notebridge.py clean-duplicates
 - ✅ 场景4：笔记来自 Joplin，在 Obsidian 有修改 → **允许同步**
 
 ### 重复头部问题解决方案
-1. **立即修复**：运行 `python notebridge.py fix-duplicate-headers` 修复现有的重复头部
+1. **立即修复**：运行 `job fix-duplicate-headers` 修复现有的重复头部
 2. **预防措施**：
-   - 使用手工确认模式同步：`python notebridge.py sync-manual`
+   - 使用手工确认模式同步：`job sync-manual`
    - 每次同步前自动检查并修复重复头部
-   - 定期运行预防性检查：`python notebridge.py prevent-duplicate-headers`
+   - 定期运行预防性检查：`job prevent-duplicate-headers`
 3. **根本解决**：
    - 改进了同步信息添加逻辑，彻底清理旧的同步信息
    - 在 `update_obsidian_note` 函数中添加了重复头部检查
