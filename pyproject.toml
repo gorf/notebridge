@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "joplin-obsidian-bridge"
-version = "0.2.0"
+version = "0.2.1"
 description = "CLI to sync notes between Joplin and Obsidian (bidirectional)."
 readme = "README.md"
 license = "MIT"
@@ -33,6 +33,11 @@ dependencies = [
     "fuzzywuzzy",
     "python-Levenshtein",
 ]
+
+[project.urls]
+Homepage = "https://github.com/gorf/joplin-obsidian-bridge"
+Repository = "https://github.com/gorf/joplin-obsidian-bridge"
+Documentation = "https://github.com/gorf/joplin-obsidian-bridge#readme"
 
 [project.scripts]
 job = "notebridge:main"

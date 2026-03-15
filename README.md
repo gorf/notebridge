@@ -1,6 +1,6 @@
 # Joplin-Obsidian Bridge
 
-[English](README.md) | [简体中文](README_CN.md)
+[English](README.md) | [简体中文](https://github.com/gorf/joplin-obsidian-bridge/blob/main/README_CN.md)
 
 ---
 
