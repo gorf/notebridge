@@ -33,6 +33,7 @@ notebridge 可以让你在 Windows 系统下，轻松同步 Joplin 和 Obsidian 
    ```bash
    pip install joplin-obsidian-bridge
    ```
+   安装包地址：[PyPI - joplin-obsidian-bridge](https://pypi.org/project/joplin-obsidian-bridge/)
 3. 配置见下方「配置方法」。配置可放在**当前工作目录**的 `config.json`，或：
    - Windows：`%APPDATA%\notebridge\config.json`
    - macOS/Linux：`~/.config/notebridge/config.json`

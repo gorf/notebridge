@@ -29,7 +29,7 @@ You just need to enter one command in the terminal, and the tool will automatica
 ### Option 1: From PyPI (recommended)
 
 1. Install Python (3.8+ recommended).
-2. Run: `pip install joplin-obsidian-bridge`
+2. Run: `pip install joplin-obsidian-bridge` ([PyPI](https://pypi.org/project/joplin-obsidian-bridge/))
 3. Put `config.json` in the **current working directory**, or in:
    - Windows: `%APPDATA%\notebridge\config.json`
    - macOS/Linux: `~/.config/notebridge/config.json`

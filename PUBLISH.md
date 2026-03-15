@@ -15,7 +15,7 @@
    ```bash
    python -m build
    ```
-   This produces `notebridge-x.y.z.tar.gz` and `notebridge-x.y.z-py3-none-any.whl` under `dist/`.
+   This produces `joplin_obsidian_bridge-x.y.z.tar.gz` and `joplin_obsidian_bridge-x.y.z-py3-none-any.whl` under `dist/`.
 
 3. **Upload to PyPI**  
    ```bash
@@ -29,10 +29,19 @@
 
 ## Automated publish with GitHub Actions
 
-You can build and upload to PyPI on tag push:
+The repo includes `.github/workflows/publish.yml`. It runs when you **publish a GitHub Release** (or run it manually from the Actions tab).
 
-1. Create an API token on PyPI.
-2. Add `PYPI_API_TOKEN` under GitHub repo Settings → Secrets.
-3. Add a workflow (e.g. `.github/workflows/publish.yml`) that runs `twine upload` on release/publish using `PYPI_API_TOKEN`.
+**One-time setup**
 
-You can add the full workflow when needed.
+1. Create an API token on [PyPI](https://pypi.org/manage/account/token/) (scope: entire account or this project).
+2. In your GitHub repo: **Settings → Secrets and variables → Actions → New repository secret**.
+3. Name: `PYPI_API_TOKEN`, Value: paste the token (starts with `pypi-`).
+
+**Release flow**
+
+1. Bump `version` in `pyproject.toml` (e.g. `0.2.0` → `0.3.0`).
+2. Commit, push to `main`.
+3. On GitHub: **Releases → Create a new release**; choose a tag (e.g. `v0.3.0`), publish.
+4. The **Publish to PyPI** workflow runs and uploads the new version.
+
+You can also trigger it manually: **Actions → Publish to PyPI → Run workflow**.
