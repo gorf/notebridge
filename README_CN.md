@@ -106,6 +106,9 @@ python notebridge.py clean-joplin-imports
 # 性能测试对比（新旧算法对比）
 python notebridge.py test-duplicates
 
+# 运行测试（标签与附件同步逻辑，无需真实 Joplin/Obsidian）
+python -m unittest tests.test_tags_and_attachments -v
+
 # 交互式清理重复笔记（推荐）
 python notebridge.py interactive-clean
 
@@ -290,6 +293,16 @@ python notebridge.py clean-duplicates
 - ✅ **增强同步信息清理逻辑**：彻底清理HTML注释和YAML格式的混合重复信息
 - ✅ **添加预防性检查命令**：`prevent-duplicate-headers` 用于定期检查重复头部
 - ✅ **修复时间戳问题**：避免生成未来时间戳
+
+### 标签与附件同步修复（针对 [Issue #1](https://github.com/gorf/notebridge/issues/1)）
+- ✅ **标签同步**：
+  - **Joplin → Obsidian**：同步时从 Joplin 读取笔记标签，写入 Obsidian 的 YAML frontmatter（`tags: [标签1, 标签2]`）
+  - **Obsidian → Joplin**：从 Obsidian 的 frontmatter `tags` 与正文中的 `#标签` 提取标签，在 Joplin 中自动创建并关联到对应笔记
+- ✅ **附件同步**：
+  - 附件下载失败时会在控制台输出明确错误信息（如 HTTP 状态码、网络异常、写入失败），便于排查
+  - 支持资源 ID 大小写兼容（Joplin 部分环境下可能返回大写十六进制 ID）
+  - 下载前确保 `attachments` 目录存在，避免因目录缺失导致写入失败
+- ✅ **测试**：新增 `tests/test_tags_and_attachments.py`，覆盖标签提取、资源 ID 提取与替换、Joplin 标签 API 的 mock 测试；无需真实 config 与 Joplin 即可运行
 
 ### v1.2.0 - 修复单向同步规则过滤问题
 - ✅ **修复单向同步规则未生效的问题**：现在程序会正确检查每个笔记的同步规则，确保只同步允许方向的笔记

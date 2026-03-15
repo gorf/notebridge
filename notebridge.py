@@ -1439,33 +1439,152 @@ def get_unique_filename(base_path):
             return new_path
         counter += 1
 
+def get_joplin_note_tags(note_id):
+    """
+    通过 Joplin API 获取某条笔记的所有标签标题。
+    API: GET /notes/:id/tags（分页）
+    返回标签标题列表，失败时返回空列表。
+    """
+    tag_titles = []
+    page = 1
+    try:
+        while True:
+            url = f"{joplin_api_base}/notes/{note_id}/tags?token={joplin_token}&fields=title&page={page}"
+            resp = requests.get(url, timeout=30)
+            if resp.status_code != 200:
+                return tag_titles
+            data = resp.json()
+            for item in data.get('items', []):
+                title = item.get('title', '').strip()
+                if title:
+                    tag_titles.append(title)
+            if not data.get('has_more', False):
+                break
+            page += 1
+    except Exception:
+        pass
+    return tag_titles
+
+
+def extract_obsidian_tags(content):
+    """
+    从 Obsidian 笔记内容中提取标签：YAML frontmatter 的 tags 字段 + 正文中的 #标签。
+    返回去重后的标签标题列表。
+    """
+    tags = []
+    # 1. 从 frontmatter 取 tags（支持 tags: [a, b] 或 tags: a）
+    yaml_match = re.search(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+    if yaml_match:
+        try:
+            yaml_content = yaml_match.group(1)
+            data = yaml.safe_load(yaml_content)
+            if isinstance(data, dict) and data.get('tags'):
+                t = data['tags']
+                if isinstance(t, list):
+                    tags.extend(str(x).strip() for x in t if x)
+                else:
+                    tags.append(str(t).strip())
+        except yaml.YAMLError:
+            pass
+    # 2. 从正文取 #标签（Obsidian 风格，避免匹配 URL 中的 #）
+    # 匹配行内或行尾的 #中文/英文/数字 标签，且 # 前为非字母数字
+    inline = re.findall(r'(?<![a-zA-Z0-9#])#([^\s#\[\]|]+)', content)
+    tags.extend(x.strip() for x in inline if x.strip())
+    # 去重并保持顺序
+    seen = set()
+    out = []
+    for t in tags:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def get_or_create_joplin_tag(title):
+    """
+    按标题查找 Joplin 标签，不存在则创建。返回标签 ID，失败返回 None。
+    """
+    if not title or not title.strip():
+        return None
+    title = title.strip()
+    # 查找：GET /search?query=title&type=tag
+    try:
+        url = f"{joplin_api_base}/search?query={requests.utils.quote(title)}&type=tag&token={joplin_token}&fields=id,title"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('items', []):
+                if item.get('title', '').strip() == title:
+                    return item.get('id')
+        # 未找到则创建：POST /tags
+        create_url = f"{joplin_api_base}/tags?token={joplin_token}"
+        resp = requests.post(create_url, json={'title': title}, timeout=10)
+        if resp.status_code == 200:
+            return resp.json().get('id')
+    except Exception:
+        pass
+    return None
+
+
+def attach_joplin_tag_to_note(tag_id, note_id):
+    """将 Joplin 标签关联到笔记。POST /tags/:id/notes"""
+    try:
+        url = f"{joplin_api_base}/tags/{tag_id}/notes?token={joplin_token}"
+        resp = requests.post(url, json={'id': note_id}, timeout=10)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def sync_obsidian_tags_to_joplin_note(obsidian_body, joplin_note_id):
+    """
+    把 Obsidian 笔记中的标签同步到 Joplin 笔记（创建/关联标签）。
+    """
+    tag_titles = extract_obsidian_tags(obsidian_body)
+    for t in tag_titles:
+        tag_id = get_or_create_joplin_tag(t)
+        if tag_id and attach_joplin_tag_to_note(tag_id, joplin_note_id):
+            pass  # 可选：print(f"    已同步标签: {t}")
+        elif t:
+            print(f"    ⚠️ 标签同步失败: {t}")
+
+
 def extract_joplin_resource_ids(content):
     """
     提取Joplin笔记正文中所有资源ID（支持markdown和HTML格式）
-    返回资源ID列表
+    返回资源ID列表。Joplin 资源 ID 为 32 位十六进制，兼容大小写。
     """
     resource_ids = []
     
     # 1. 提取markdown格式的资源：![xxx](:/资源ID) 或 ![](:/资源ID)
-    # 注意：.*? 是非贪婪匹配，\[和\]需要转义
-    markdown_ids = re.findall(r'!\[[^\]]*\]\(:\/([a-f0-9]+)\)', content)
+    # 注意：.*? 是非贪婪匹配，\[和\]需要转义；[a-fA-F0-9] 兼容大小写
+    markdown_ids = re.findall(r'!\[[^\]]*\]\(:\/([a-fA-F0-9]+)\)', content)
     resource_ids.extend(markdown_ids)
     
     # 2. 提取HTML格式的资源：<img src=":/资源ID"/>
-    html_ids = re.findall(r'<img[^>]*src=["\']?:\/([a-f0-9]+)["\']?[^>]*>', content)
+    html_ids = re.findall(r'<img[^>]*src=["\']?:\/([a-fA-F0-9]+)["\']?[^>]*>', content)
     resource_ids.extend(html_ids)
     
-    # 去重
-    return list(set(resource_ids))
+    # 去重并统一为小写（Joplin API 使用小写）
+    return list(set(rid.lower() for rid in resource_ids))
 
 def download_joplin_resource(resource_id):
     """
-    通过Joplin API下载资源文件，返回本地文件路径和原始文件名
+    通过Joplin API下载资源文件，返回本地文件路径和原始文件名。
+    失败时打印明确错误信息，便于排查「附件同步失败」问题。
     """
+    # 统一为小写（API 使用小写 ID）
+    resource_id = resource_id.lower()
     # 获取资源元数据，获取文件名和MIME类型
     meta_url = f"{joplin_api_base}/resources/{resource_id}?token={joplin_token}"
-    resp = requests.get(meta_url)
+    try:
+        resp = requests.get(meta_url, timeout=30)
+    except Exception as e:
+        print(f"    ⚠️ 附件 {resource_id[:8]}... 获取元数据失败: {e}")
+        return None, None
     if resp.status_code != 200:
+        print(f"    ⚠️ 附件 {resource_id[:8]}... 元数据请求失败 HTTP {resp.status_code}: {resp.text[:200]}")
         return None, None
     meta = resp.json()
     original_filename = meta.get('title') or (resource_id + '.bin')
@@ -1475,18 +1594,29 @@ def download_joplin_resource(resource_id):
     
     # 下载文件内容
     file_url = f"{joplin_api_base}/resources/{resource_id}/file?token={joplin_token}"
-    resp = requests.get(file_url)
+    try:
+        resp = requests.get(file_url, timeout=60)
+    except Exception as e:
+        print(f"    ⚠️ 附件 {resource_id[:8]}... 下载失败: {e}")
+        return None, None
     if resp.status_code != 200:
+        print(f"    ⚠️ 附件 {resource_id[:8]}... 文件下载失败 HTTP {resp.status_code}: {resp.text[:200]}")
         return None, None
     
+    # 确保附件目录存在
+    os.makedirs(OBSIDIAN_ATTACHMENT_DIR, exist_ok=True)
     # 确保文件名唯一
     local_path = os.path.join(OBSIDIAN_ATTACHMENT_DIR, safe_filename)
     unique_local_path = get_unique_filename(local_path)
     unique_filename = os.path.basename(unique_local_path)
     
     # 保存到attachments目录
-    with open(unique_local_path, 'wb') as f:
-        f.write(resp.content)
+    try:
+        with open(unique_local_path, 'wb') as f:
+            f.write(resp.content)
+    except Exception as e:
+        print(f"    ⚠️ 附件 {resource_id[:8]}... 写入本地失败: {e}")
+        return None, None
     return unique_local_path, unique_filename
 
 def replace_joplin_resource_links(content, resource_map):
@@ -1497,14 +1627,14 @@ def replace_joplin_resource_links(content, resource_map):
     """
     # 1. 替换markdown格式：![xxx](:/资源ID) -> ![](attachments/文件名)
     def repl_markdown(match):
-        resource_id = match.group(1)
+        resource_id = match.group(1).lower()
         filename = resource_map.get(resource_id, resource_id)
         return f'![](attachments/{filename})'
-    content = re.sub(r'!\[[^\]]*\]\(:\/([a-f0-9]+)\)', repl_markdown, content)
+    content = re.sub(r'!\[[^\]]*\]\(:\/([a-fA-F0-9]+)\)', repl_markdown, content)
     
     # 2. 替换HTML格式：<img src=":/资源ID"/> -> ![](attachments/文件名)
     def repl_html(match):
-        resource_id = match.group(1)
+        resource_id = match.group(1).lower()
         filename = resource_map.get(resource_id, resource_id)
         # 提取width和height属性（如果有）
         full_match = match.group(0)
@@ -1524,7 +1654,7 @@ def replace_joplin_resource_links(content, resource_map):
         else:
             return f'![](attachments/{filename})'
     
-    content = re.sub(r'<img[^>]*src=["\']?:\/([a-f0-9]+)["\']?[^>]*>', repl_html, content)
+    content = re.sub(r'<img[^>]*src=["\']?:\/([a-fA-F0-9]+)["\']?[^>]*>', repl_html, content)
     
     return content
 
@@ -1546,6 +1676,10 @@ def sync_joplin_to_obsidian(joplin_note, obsidian_folder='根目录'):
             if existing_sync_info.get('notebridge_source'):
                 sync_info['notebridge_source'] = existing_sync_info['notebridge_source']
             # 注意：不保留旧的同步时间，使用新生成的当前时间
+            # 从 Joplin 获取该笔记的标签，写入 Obsidian frontmatter
+            joplin_tags = get_joplin_note_tags(joplin_note['id'])
+            if joplin_tags:
+                sync_info['tags'] = joplin_tags
             # 移除Joplin的HTML注释格式，准备转换为Obsidian的YAML格式
             content = cleaned_joplin_body
             # 清理HTML注释格式的同步信息（更彻底）
@@ -1559,11 +1693,15 @@ def sync_joplin_to_obsidian(joplin_note, obsidian_folder='根目录'):
             # 清理多余的空行
             content = re.sub(r'^\s*\n+', '', content)
             content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
-            # 添加Obsidian格式的同步信息（YAML frontmatter）
+            # 添加Obsidian格式的同步信息（YAML frontmatter，含标签）
             content = add_sync_info_to_obsidian_content(content, sync_info)
         else:
             # 只有没有同步信息的笔记才生成新的
             sync_info = generate_sync_info('joplin')
+            # 从 Joplin 获取该笔记的标签，写入 Obsidian frontmatter
+            joplin_tags = get_joplin_note_tags(joplin_note['id'])
+            if joplin_tags:
+                sync_info['tags'] = joplin_tags
             # 直接使用Obsidian格式（使用清理后的内容）
             content = add_sync_info_to_obsidian_content(cleaned_joplin_body, sync_info)
         
@@ -1854,6 +1992,9 @@ def sync_obsidian_to_joplin(obsidian_note, joplin_notebook='未分类'):
         resp = requests.post(create_url, json=note_data)
         
         if resp.status_code == 200:
+            new_note_id = resp.json()['id']
+            # 将 Obsidian 笔记中的标签同步到 Joplin
+            sync_obsidian_tags_to_joplin_note(obsidian_note['body'], new_note_id)
             # 重要：回写同步信息到Obsidian端，确保Obsidian也有同步信息（YAML格式）
             # 无论是否有同步信息，都回写以确保格式正确（使用清理后的内容）
             try:
@@ -1889,7 +2030,7 @@ def sync_obsidian_to_joplin(obsidian_note, joplin_notebook='未分类'):
                 print(f"    文件路径长度: {len(obsidian_note['path'])}")
                 print(f"    文件路径: {obsidian_note['path']}")
             
-            return True, resp.json()['id']
+            return True, new_note_id
         else:
             return False, f"创建笔记失败: {resp.text}"
             
@@ -2028,7 +2169,10 @@ def sync_obsidian_to_joplin_with_notebook_id(obsidian_note, notebook_id):
                 else:
                     print(f"[同步] Obsidian 端同步信息已是最新，无需回写")
                 
-                return True, resp.json()['id']
+                # 将 Obsidian 笔记中的标签同步到 Joplin
+                new_note_id = resp.json()['id']
+                sync_obsidian_tags_to_joplin_note(obsidian_note['body'], new_note_id)
+                return True, new_note_id
             else:
                 print(f"[同步] 失败: {obsidian_note['title']}，状态码: {resp.status_code}，耗时 {duration:.2f} 秒")
                 if attempt < max_retries and resp.status_code in [408, 504]:

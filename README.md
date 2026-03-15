@@ -106,6 +106,9 @@ python notebridge.py clean-joplin-imports
 # Performance test comparison (new vs old algorithm)
 python notebridge.py test-duplicates
 
+# Run tests (tags & attachments sync logic, no real Joplin/Obsidian needed)
+python -m unittest tests.test_tags_and_attachments -v
+
 # Interactive duplicate cleaning (recommended)
 python notebridge.py interactive-clean
 
@@ -315,6 +318,10 @@ python notebridge.py clean-duplicates
 - ✅ **Enhanced sync info cleaning logic**: Thoroughly cleans mixed HTML comment and YAML format duplicate info
 - ✅ **Added preventive check command**: `prevent-duplicate-headers` for regular duplicate header checks
 - ✅ **Fixed timestamp issues**: Avoids generating future timestamps
+
+### Tags and Attachments Sync Fix ([Issue #1](https://github.com/gorf/notebridge/issues/1))
+- ✅ **Tags sync**: Joplin → Obsidian writes note tags to YAML frontmatter `tags`; Obsidian → Joplin reads frontmatter and inline `#tags` and creates/assigns tags in Joplin
+- ✅ **Attachments**: Clear error messages when resource download fails; case-insensitive resource ID; ensure `attachments` directory exists before writing
 
 ### v1.2.0 - Fix One-way Sync Rule Filtering Issues
 - ✅ **Fixed one-way sync rules not taking effect**: Program now correctly checks each note's sync rules, ensuring only allowed direction notes sync
